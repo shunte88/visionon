@@ -356,57 +356,48 @@ void get_dB_indices( struct peak_meter_t *peak_meter )
 
 void vissy_vumeter( struct vu_meter_t *vu_meter ) {
 
-        int16_t  *ptr;
-	int16_t  sample;
-	uint8_t  channel;
-	//uint64_t sample_squared[METER_CHANNELS];
-        uint64_t sample_sq;
-        size_t i, num_samples, samples_until_wrap;
+    int16_t		*ptr;
+	int16_t		sample;
+	uint8_t		channel;
+	uint64_t	sample_sq;
+	size_t i, num_samples, samples_until_wrap;
 
-        int offs;
+	int offs;
 
-        num_samples = VUMETER_DEFAULT_SAMPLE_WINDOW;
+	num_samples = VUMETER_DEFAULT_SAMPLE_WINDOW;
+
+	vissy_check(); // ??? overkill ???
 
 	for ( channel = 0; channel < METER_CHANNELS; channel++ ) 
 		vu_meter->sample_accumulator[channel] = 0;
-        //vu_meter->sample_accumulator[1] = 0;
 
-        vissy_lock();
-        if (vissy_is_playing()) {
+    vissy_lock();
+    if (vissy_is_playing()) {
 
-                offs = vissy_get_buffer_idx() - (num_samples * 2);
-                while (offs < 0) offs += vissy_get_buffer_len();
+        offs = vissy_get_buffer_idx() - (num_samples * 2);
+        while (offs < 0) offs += vissy_get_buffer_len();
 
-                ptr = vissy_get_buffer() + offs;
-                samples_until_wrap = vissy_get_buffer_len() - offs;
+        ptr = vissy_get_buffer() + offs;
+        samples_until_wrap = vissy_get_buffer_len() - offs;
 
-                for (i=0; i<num_samples; i++) {
-
-
-			for ( channel = 0; channel < METER_CHANNELS; channel++ )
-			{
-		                sample = (*ptr++) >> 7;
-		                sample_sq = sample * sample;
-		                vu_meter->sample_accumulator[channel] += sample_sq;
+        for (i=0; i<num_samples; i++) {
+			for ( channel = 0; channel < METER_CHANNELS; channel++ ) {
+				sample = (*ptr++) >> 7;
+				sample_sq = sample * sample;
+				vu_meter->sample_accumulator[channel] += sample_sq;
 
 			}
-                        //sample = (*ptr++) >> 7;
-                        //sample_sq = sample * sample;
-                        //vu_meter->sample_accumulator[1] += sample_sq;
-
-                        samples_until_wrap -= 2;
-                        if (samples_until_wrap <= 0) {
-                                ptr = vissy_get_buffer();
-                                samples_until_wrap = vissy_get_buffer_len();
-                        }
-
-                }
+			samples_until_wrap -= 2;
+			if (samples_until_wrap <= 0) {
+				ptr = vissy_get_buffer();
+				samples_until_wrap = vissy_get_buffer_len();
+			}
         }
-        vissy_unlock();
+    }
+    vissy_unlock();
 
-        vu_meter->sample_accumulator[0] /= num_samples;
-        vu_meter->sample_accumulator[1] /= num_samples;
-
+    vu_meter->sample_accumulator[0] /= num_samples;
+    vu_meter->sample_accumulator[1] /= num_samples;
 
 }
 

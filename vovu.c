@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <sys/time.h>
 #include <signal.h>
 #include <unistd.h>
@@ -13,32 +14,55 @@
 
 #define METER_DELAY  5000
 
+void beforeExit(void)
+{
+	printf("\033[?25h");
+	pthread_exit(NULL);
+}
+
+void sigint_handler(int sig)
+{
+    beforeExit();
+    printf("Received INT signal, Exiting...\n");
+    exit(0);
+}
+
+void attach_signal_handler(void)
+{
+    struct sigaction sa;
+
+    sa.sa_handler = sigint_handler;
+    sa.sa_flags = 0;
+    sigemptyset(&sa.sa_mask);
+
+    if(sigaction(SIGINT, &sa, NULL) == -1)
+    {
+        printf("Error, Cannot set signal handler: sigaction() failure. Exiting...\n");
+        beforeExit();
+        exit(1);
+    }
+}
+
 void *visualizeServer( void *x_voidptr ) {
 	Initialize();
 	Serve();
 	return NULL;
 }
 
-static void handler(int signum)
-{
-	pthread_exit(NULL);
-}
-
 int main( void )
 {
 
-	signal(SIGUSR1, handler);
+    attach_signal_handler();
 
-	pthread_t	thread_id;
-	int		breakit;
-	uint8_t		channel;
+	pthread_t thread_id;
+	uint8_t channel;
 
 	struct vu_meter_t vu_meter =
 	{
-	        .sample_accumulator = {0, 0},
-		.rms_bar            = {0, 0},
-		.rms_levels	    = PEAK_METER_LEVELS_MAX,
-	        .rms_scale          =
+	    .sample_accumulator	= {0, 0},
+		.rms_bar			= {0, 0},
+		.rms_levels			= PEAK_METER_LEVELS_MAX,
+		.rms_scale			=
 		{
 			0, 2, 5, 7, 10, 21, 33, 45, 57, 82, 108, 133, 159, 200,
 			242, 284, 326, 387, 448, 509, 570, 652, 735, 817, 900,
@@ -52,8 +76,6 @@ int main( void )
 	pthread_create(&thread_id, NULL, visualizeServer, NULL);
 	sleep(2); // bring server online
 
-	breakit = 10000;
-
 	vissy_check();
 
 	printf("\033[1;1H\033[?25l");
@@ -62,7 +84,7 @@ int main( void )
 	int  i;
 	GoString meter = {"VU", 2};
 
-	while ( breakit>0 )
+	while (true)
 	{
 
 		vissy_vumeter( &vu_meter );
@@ -81,6 +103,7 @@ int main( void )
 			vu_meter.rms_charbar[channel][i] = 0;
 		}
 
+		/*
 		printf("\033[1;1H\033[34mL: (%.2d) %.5lld %s                               \n\033[31mR: (%.2d) %.5lld %s                               \n", 
 			vu_meter.rms_bar[0],
 			vu_meter.sample_accumulator[0],
@@ -88,7 +111,9 @@ int main( void )
 			vu_meter.rms_bar[1],
 			vu_meter.sample_accumulator[1],
 			vu_meter.rms_charbar[0]);
+		*/
 
+		// need to contruct JSON here
 		sprintf( payload, "L:%.2d:%.5lld|R:%.2d:%.5lld",
 			vu_meter.rms_bar[0],
 			vu_meter.sample_accumulator[0],
@@ -99,8 +124,6 @@ int main( void )
 		Publish(meter, p);
 
 		usleep( METER_DELAY );
-
-		breakit--;
 
 	}
 
