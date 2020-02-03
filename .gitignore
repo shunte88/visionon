@@ -3,6 +3,7 @@
 
 # Object files
 *.o
+*.so
 *.ko
 *.obj
 *.elf
@@ -50,3 +51,5 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
+
+visionon
