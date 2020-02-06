@@ -21,6 +21,7 @@ type (
 	Channel struct {
 		Name        string `json:"name"`
 		Accumulated int32  `json:"accumulated,omitempty"`
+		DBfs        int32  `json:"dBfs,omitempty"`
 		Scaled      int32  `json:"scaled,omitempty"`
 	}
 	// Meter visualization metrics
@@ -47,11 +48,21 @@ func Publish(meter, data string) int {
 
 	// need to format this in C routine - or better share a struct
 	var cc []Channel
+	var dBfs int64 = 0
 	for _, v := range strings.Split(data, `|`) {
 		vc := strings.Split(v, `:`)
 		scaled, _ := strconv.ParseInt(vc[1], 10, 32)
 		accum, _ := strconv.ParseInt(vc[2], 10, 32)
-		cc = append(cc, Channel{Name: vc[0], Accumulated: int32(accum), Scaled: int32(scaled)})
+		if len(vc) > 2 {
+			dBfs, _ = strconv.ParseInt(vc[3], 10, 32)
+		} else {
+			dBfs = 0
+		}
+		cc = append(cc,
+			Channel{Name: vc[0],
+				Accumulated: int32(accum),
+				Scaled:      int32(scaled),
+				DBfs:        int32(dBfs)})
 
 	}
 

@@ -62,6 +62,8 @@ int main( void )
 	    .sample_accumulator	= {0, 0},
 		.rms_bar			= {0, 0},
 		.rms_levels			= PEAK_METER_LEVELS_MAX,
+		.floor              = -96,
+		.reference          =  32767,
 		.rms_scale			=
 		{
 			0, 2, 5, 7, 10, 21, 33, 45, 57, 82, 108, 133, 159, 200,
@@ -80,7 +82,7 @@ int main( void )
 
 	printf("\033[1;1H\033[?25l");
 
-	char payload[30];
+	char payload[100];
 	int  i;
 	GoString meter = {"VU", 2};
 
@@ -103,22 +105,26 @@ int main( void )
 			vu_meter.rms_charbar[channel][i] = 0;
 		}
 
-		/*
-		printf("\033[1;1H\033[34mL: (%.2d) %.5lld %s                               \n\033[31mR: (%.2d) %.5lld %s                               \n", 
+		
+		printf("\033[1;1H\033[34mL: (%.2d %.4d) %.5lld %s                               \n\033[31mR: (%.2d %.4d) %.5lld %s                               \n", 
 			vu_meter.rms_bar[0],
+			vu_meter.dBfs[0],
 			vu_meter.sample_accumulator[0],
 			vu_meter.rms_charbar[0],
 			vu_meter.rms_bar[1],
+			vu_meter.dBfs[1],
 			vu_meter.sample_accumulator[1],
 			vu_meter.rms_charbar[0]);
-		*/
+		
 
 		// need to contruct JSON here
-		sprintf( payload, "L:%.2d:%.5lld|R:%.2d:%.5lld",
+		sprintf( payload, "L:%.2d:%.5lld:%.5d|R:%.2d:%.5lld:%.5d",
 			vu_meter.rms_bar[0],
 			vu_meter.sample_accumulator[0],
+			vu_meter.dBfs[0],
 			vu_meter.rms_bar[1],
-			vu_meter.sample_accumulator[1]);
+			vu_meter.sample_accumulator[1],
+			vu_meter.dBfs[1]);
 
 		GoString p = {payload,strlen(payload)};
 		Publish(meter, p);

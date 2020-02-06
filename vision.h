@@ -32,6 +32,9 @@ struct peak_meter_t
 struct vu_meter_t
 {
 	long long sample_accumulator [METER_CHANNELS]; // vu raw peak values.
+    int8_t    floor;      // Noise floor for meter (dB).
+    uint16_t  reference;  // Reference level.
+    int8_t    dBfs               [METER_CHANNELS]; // dBfs values.
 	uint8_t   rms_bar            [METER_CHANNELS];
 	uint8_t   rms_levels;
 	char	  rms_charbar	     [METER_CHANNELS][PEAK_METER_LEVELS_MAX + 1];

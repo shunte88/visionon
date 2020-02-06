@@ -359,7 +359,8 @@ void vissy_vumeter( struct vu_meter_t *vu_meter ) {
     int16_t		*ptr;
 	int16_t		sample;
 	uint8_t		channel;
-	uint64_t	sample_sq;
+	uint64_t	sample_sq[METER_CHANNELS];
+	uint64_t	sample_rms[METER_CHANNELS];
 	size_t i, num_samples, samples_until_wrap;
 
 	int offs;
@@ -383,8 +384,8 @@ void vissy_vumeter( struct vu_meter_t *vu_meter ) {
         for (i=0; i<num_samples; i++) {
 			for ( channel = 0; channel < METER_CHANNELS; channel++ ) {
 				sample = (*ptr++) >> 7;
-				sample_sq = sample * sample;
-				vu_meter->sample_accumulator[channel] += sample_sq;
+				sample_sq[channel] = sample * sample;
+				vu_meter->sample_accumulator[channel] += sample_sq[channel];
 
 			}
 			samples_until_wrap -= 2;
@@ -399,6 +400,15 @@ void vissy_vumeter( struct vu_meter_t *vu_meter ) {
     vu_meter->sample_accumulator[0] /= num_samples;
     vu_meter->sample_accumulator[1] /= num_samples;
 
+	for ( channel = 0; channel < METER_CHANNELS; channel++ )
+	{
+		sample_rms[channel] = round( sqrt( sample_sq[channel] ));
+		vu_meter->dBfs[channel] = 20 * log10( (float) sample_rms[channel] /
+												(float) vu_meter->reference );
+		if ( vu_meter->dBfs[channel] < vu_meter->floor )
+			vu_meter->dBfs[channel] = vu_meter->floor;
+	}
+	
 }
 
 
