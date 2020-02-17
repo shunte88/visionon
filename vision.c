@@ -1,7 +1,6 @@
 
 #include <stdbool.h>
 
-#include <pthread.h>
 #include <stdio.h>
 #include <sys/mman.h>
 #include <stdint.h>
@@ -16,7 +15,12 @@
 #include <sys/ioctl.h>
 #include <net/if.h>
 
+#include <pthread.h>
+#include "kiss_fft.h"
 #include "vision.h"
+#include "vovu.h"
+
+#include "log.h"
 
 #define VUMETER_DEFAULT_SAMPLE_WINDOW 1024 * 2
 
@@ -31,8 +35,6 @@ static struct vis_t
 	int16_t  buffer[VIS_BUF_SIZE];
 }  *vis_mmap = NULL;
 
-
-static bool running = false;
 static int  vis_fd = -1;
 static char *mac_address = NULL;
 
@@ -79,7 +81,10 @@ static char *get_mac_address()
 	sprintf( macaddr, "%02x:%02x:%02x:%02x:%02x:%02x",
 		mac[0], mac[1], mac[2], mac[3], mac[4], mac[5] );
 
+	toLog(0,"Active squeeze: %s\n", macaddr);
+
 	return macaddr;
+
 }
 
 static void vissy_reopen( void )
@@ -160,9 +165,9 @@ void vissy_check( void )
 
 	pthread_rwlock_rdlock( &vis_mmap->rwlock );
 
-	running = vis_mmap->running;
+	bool running = vis_mmap->running;
 
-	if ( running && now - vis_mmap->updated > 5 )
+	if ( running && ( now - vis_mmap->updated > 5 ) )
 	{
 		pthread_rwlock_unlock(&vis_mmap->rwlock );
 		vissy_reopen();
@@ -188,7 +193,7 @@ static void vissy_unlock( void )
 static bool vissy_is_playing( void )
 {
 	if ( !vis_mmap ) return false;
-	return running;
+	return vis_mmap->running;
 }
 
 uint32_t vissy_get_rate( void )
@@ -215,168 +220,193 @@ static uint32_t vissy_get_buffer_idx( void )
 	return vis_mmap->buf_index;
 }
 
-//  ---------------------------------------------------------------------------
-//  Calculates peak dBfs values (L & R) of a number of stream samples.
-//  ---------------------------------------------------------------------------
-void get_dBfs( struct peak_meter_t *peak_meter )
-{
-	int16_t  *ptr;
-	int16_t  sample;
-	uint64_t sample_squared[METER_CHANNELS];
-	uint16_t sample_rms[METER_CHANNELS];
-	uint8_t  channel;
-	size_t   i, wrap;
-	int	 offs;
+void vissy_meter_init( struct vissy_meter_t *vissy_meter ) {
 
-	vissy_check();
+	int l2int = 0;
+	int shiftsubbands;
 
-	for ( channel = 0; channel < METER_CHANNELS; channel++ )
-		sample_squared[channel] = 0;
+	vissy_meter->channel_width[0] / vissy_meter->bar_size[0];
 
-	if ( vissy_is_playing() )
-	{
-		vissy_lock();
+	// Approximate the number of subbands we'll display based
+	// on the width available and the size of the histogram bars.
+	vissy_meter->num_subbands = vissy_meter->channel_width[0] / vissy_meter->bar_size[0];
 
-
-		offs = vissy_get_buffer_idx() - ( peak_meter->samples * METER_CHANNELS );
-		while ( offs < 0 ) offs += vissy_get_buffer_len();
-
-		ptr = vissy_get_buffer() + offs;
-		wrap = vissy_get_buffer_len() - offs;
-
-		for ( i = 0; i < peak_meter->samples; i++ )
-		{
-			for ( channel = 0; channel < METER_CHANNELS; channel++ )
-			{
-				sample = *ptr++;
-				sample_squared[channel] += sample * sample;
-			}
-			// Check for buffer wrap and refresh if necessary.
-			wrap -= 2;
-			if ( wrap <= 0 )
-			{
-				ptr = vissy_get_buffer();
-				wrap = vissy_get_buffer_len();
-			}
-		}
-		vissy_unlock();
+	// Calculate the integer component of the log2 of the num_subbands
+	l2int = 0;
+	shiftsubbands = vissy_meter->num_subbands;
+	while( shiftsubbands != 1) {
+		l2int++;
+		shiftsubbands >>= 1;
 	}
 
-	for ( channel = 0; channel < METER_CHANNELS; channel++ )
-	{
-		sample_rms[channel] = round( sqrt( sample_squared[channel] ));
-		peak_meter->dBfs[channel] = 20 * log10( (float) sample_rms[channel] /
-							(float) peak_meter->reference );
-		if ( peak_meter->dBfs[channel] < peak_meter->floor )
-		{
-			 peak_meter->dBfs[channel] = peak_meter->floor;
+	// The actual number of subbands is the largest power
+	// of 2 smaller than the specified width.
+	vissy_meter->num_subbands = 1L << l2int;
+
+	// In the case where we're going to clip the higher frequency
+	// bands, we choose the next highest power of 2.
+	if( vissy_meter->clip_subbands[0])
+		vissy_meter->num_subbands <<= 1;
+
+	// The number of histogram bars we'll display is nominally
+	// the number of subbands we'll compute.
+	vissy_meter->num_bars[0] = vissy_meter->num_subbands;
+
+	// Though we may have to compute more subbands to meet
+	// a minimum and average them into the histogram bars.
+	if ( vissy_meter->num_subbands < MIN_SUBBANDS) {
+		vissy_meter->subbands_in_bar[0] = MIN_SUBBANDS / vissy_meter->num_subbands;
+		vissy_meter->num_subbands = MIN_SUBBANDS;
+	} else {
+		vissy_meter->subbands_in_bar[0] = 1;
+	}
+
+	// If we're clipping off the higher subbands we cut down
+	// the actual number of bars based on the width available.
+	if ( vissy_meter->clip_subbands[0]) {
+		vissy_meter->num_bars[0] = vissy_meter->channel_width[0] / vissy_meter->bar_size[0];
+	}
+
+	// Since we now have a fixed number of subbands, we choose
+	// values for the second channel based on these.
+	if( !vissy_meter->is_mono) {
+		vissy_meter->num_bars[1] = vissy_meter->channel_width[1] / vissy_meter->bar_size[1];
+		vissy_meter->subbands_in_bar[1] = 1;
+		// If we have enough space for all the subbands, great.
+		if( vissy_meter->num_bars[1] > vissy_meter->num_subbands) {
+			vissy_meter->num_bars[1] = vissy_meter->num_subbands;
+
+		// If not, we find the largest factor of the
+		// number of subbands that we can show.
+		} else if( !vissy_meter->clip_subbands[1]) {
+			int s = vissy_meter->num_subbands;
+			vissy_meter->subbands_in_bar[1] = 1;
+			while( s > vissy_meter->num_bars[1]) {
+				s >>= 1;
+				vissy_meter->subbands_in_bar[1]++;
+			}
+			vissy_meter->num_bars[1] = s;
 		}
 	}
+
+	// Calculate the number of samples we'll need to send in as
+	// input to the FFT. If we're halving the bandwidth (by
+	// averaging adjacent samples), we're going to need twice
+	// as many.
+	vissy_meter->sample_window = vissy_meter->num_subbands * 2 * X_SCALE_LOG;
+
+	if( vissy_meter->sample_window < MIN_FFT_INPUT_SAMPLES) {
+		vissy_meter->num_windows = MIN_FFT_INPUT_SAMPLES / vissy_meter->sample_window;
+	} else {
+		vissy_meter->num_windows = 1;
+	}
+
+	if( vissy_meter->cfg ) {
+		free( vissy_meter->cfg );
+		vissy_meter->cfg = NULL;
+	}
+
+	if( !vissy_meter->cfg) {
+		double const1;
+		double const2;
+		int w;
+
+		double freq_sum;
+		double scale_db;
+		double e;
+
+		int s;
+
+		vissy_meter->cfg = kiss_fft_alloc ( vissy_meter->sample_window, 0, NULL, NULL);
+
+		const1 = 0.54;
+		const2 = 0.46;
+		for( w = 0; w < vissy_meter->sample_window; w++) {
+			const double twopi = 6.283185307179586476925286766;
+			vissy_meter->filter_window[w] = const1 - ( const2 * cos( twopi * (double) w / (double) vissy_meter->sample_window));
+		}
+
+		// Compute the preemphasis
+		freq_sum = 0;
+		scale_db = 0;
+
+		// compute the decade scale
+		e = log(vissy_meter->num_subbands * X_SCALE_LOG) / log( vissy_meter->num_subbands );
+
+		vissy_meter->decade_idx[0] = 1;
+		for( s = 0; s < vissy_meter->num_subbands - 1; s++) {
+			vissy_meter->decade_idx[s+1] = pow( s+1, e) + 1;
+			vissy_meter->decade_len[s] = vissy_meter->decade_idx[s+1] - vissy_meter->decade_idx[s];
+
+			while( freq_sum > 1) {
+				freq_sum -= 1;
+				scale_db += 1.2; // 1.2 dB per kHz
+			}
+
+			if( scale_db != 0) {
+				vissy_meter->preemphasis[s] = pow( 10, ( scale_db / 10.0));
+			} else {
+				vissy_meter->preemphasis[s] = 1;
+			}
+			freq_sum += (vissy_get_rate() / 1000) / 
+				((float)(vissy_meter->num_subbands * X_SCALE_LOG) / vissy_meter->decade_len[s]);
+		}
+		vissy_meter->decade_len[s] = (vissy_meter->num_subbands * X_SCALE_LOG) - vissy_meter->decade_idx[s] + 1;
+		vissy_meter->preemphasis[s] = pow( 10, ( scale_db / 10.0));
+
+	}
+
+//		for( int s = 0; s < vissy_meter->num_subbands; s++) {
+//			printf("subband: %d, decade_idx: %d, decade_len: %d, preemphasis: %f\n", 
+//			s, vissy_meter->decade_idx[s], vissy_meter->decade_len[s], vissy_meter->preemphasis[s]);
+//		}
+
 }
 
-void get_dB_indices( struct peak_meter_t *peak_meter )
-{
-	uint8_t		 channel;
-	uint8_t		 i;
-	static bool	 falling = false;
-	static uint16_t hold_inc[METER_CHANNELS] = { 0, 0 };
-	static uint16_t fall_inc[METER_CHANNELS] = { 0, 0 };
-	static uint16_t over_inc[METER_CHANNELS] = { 0, 0 };
-	static uint8_t  over_cnt[METER_CHANNELS] = { 0, 0 };
-
-	for ( channel = 0; channel < METER_CHANNELS; channel++ )
-	{
-		// Overload check;
-		if ( peak_meter->dBfs[channel] == 0 )
-		{
-			over_cnt[channel]++;
-			if ( over_cnt[channel] > peak_meter->over_peaks )
-			{
-				peak_meter->overload[channel] = true;
-				over_inc[channel] = 0;
-			}
-		}
-		else over_cnt[channel] = 0;
-
-		// Countdown for overload reset.
-		if ( peak_meter->overload[channel] )
-		{
-			if ( over_inc[channel] > peak_meter->over_incs )
-			{
-				peak_meter->overload[channel] = false;
-				over_inc[channel] = 0;
-			}
-			else over_inc[channel]++;
-		}
-		// Concatenate output meter string.
-		for ( i = 0; i < peak_meter->num_levels; i++ )
-		{
-			if ( peak_meter->dBfs[channel] <= peak_meter->scale[i] )
-			{
-				peak_meter->bar_index[channel] = i;
-				if ( i > peak_meter->dot_index[channel] )
-				{
-					peak_meter->dot_index[channel] = i;
-					peak_meter->elapsed[channel] = 0;
-					falling = false;
-					hold_inc[channel] = 0;
-					fall_inc[channel] = 0;
-				}
-				else
-				{
-					i = peak_meter->num_levels;
-				}
-			}
-		}
-
-		// Rudimentary peak hold routine until proper timing is introduced.
-		if ( falling )
-		{
-			fall_inc[channel]++;
-			if ( fall_inc[channel] >= peak_meter->fall_incs )
-			{
-				fall_inc[channel] = 0;
-				if ( peak_meter->dot_index[channel] > 0 )
-					 peak_meter->dot_index[channel]--;
-			}
-		}
-		else
-		{
-			hold_inc[channel]++;
-			if ( hold_inc[channel] >= peak_meter->hold_incs )
-			{
-				hold_inc[channel] = 0;
-				falling = true;
-				if ( peak_meter->dot_index[channel] > 0 )
-					 peak_meter->dot_index[channel]--;
-			}
-		}
-	}
-}
-
-void vissy_vumeter( struct vu_meter_t *vu_meter ) {
+bool stashvissy_meter_calc( struct vissy_meter_t *vissy_meter ) {
 
     int16_t		*ptr;
 	int16_t		sample;
+    //int16_t		*saptr;
+	//int16_t		sasample;
+	///int64_t		sample_avg[METER_CHANNELS];
 	uint8_t		channel;
-	uint64_t	sample_sq[METER_CHANNELS];
+	uint64_t	sample_sqr[METER_CHANNELS];
+	uint64_t	sample_sum[METER_CHANNELS];
 	uint64_t	sample_rms[METER_CHANNELS];
 	size_t i, num_samples, samples_until_wrap;
+
+	int MIN_DB = 20 * log10( 1.0 / vissy_meter->reference );
+	int MAX_DB = 0;
 
 	int offs;
 
 	num_samples = VUMETER_DEFAULT_SAMPLE_WINDOW;
 
-	vissy_check(); // ??? overkill ???
+	vissy_check(); // safe
 
-	for ( channel = 0; channel < METER_CHANNELS; channel++ ) 
-		vu_meter->sample_accumulator[channel] = 0;
+	for ( channel = 0; channel < METER_CHANNELS; channel++ )
+	{
+		vissy_meter->sample_accum[channel] = 0;
+		for (i=0; i < MAX_SUBBANDS; i++) 
+		{
+			vissy_meter->sample_bin_chan[channel][i] = 0;
+		}
+	}
 
-    vissy_lock();
-    if (vissy_is_playing()) {
+	for( i = 0; i < (2 * vissy_meter->num_subbands); i++)
+		vissy_meter->avg_power[i] = 0;
 
-        offs = vissy_get_buffer_idx() - (num_samples * 2);
-        while (offs < 0) offs += vissy_get_buffer_len();
+	//kiss_fft_cpx fin_buf[MAX_SAMPLE_WINDOW];
+	//kiss_fft_cpx fout_buf[MAX_SAMPLE_WINDOW];
+
+	bool ret = false;
+
+	vissy_lock();
+	if (vissy_is_playing()) {
+
+		offs = vissy_get_buffer_idx() - (num_samples * 2); // works for FFT with 1 window
+    	while (offs < 0) offs += vissy_get_buffer_len();
 
         ptr = vissy_get_buffer() + offs;
         samples_until_wrap = vissy_get_buffer_len() - offs;
@@ -384,8 +414,17 @@ void vissy_vumeter( struct vu_meter_t *vu_meter ) {
         for (i=0; i<num_samples; i++) {
 			for ( channel = 0; channel < METER_CHANNELS; channel++ ) {
 				sample = (*ptr++) >> 7;
-				sample_sq[channel] = sample * sample;
-				vu_meter->sample_accumulator[channel] += sample_sq[channel];
+
+/*
+				if (0==channel) {
+					fin_buf[i].r = (float) (vissy_meter->filter_window[i] * sample);
+				} else {
+					fin_buf[i].i = (float) (vissy_meter->filter_window[i] * sample);
+				}
+*/
+				sample_sqr[channel] = sample * sample;
+				sample_sum[channel] += abs( sample );
+				vissy_meter->sample_accum[channel] += sample_sqr[channel];
 
 			}
 			samples_until_wrap -= 2;
@@ -394,21 +433,232 @@ void vissy_vumeter( struct vu_meter_t *vu_meter ) {
 				samples_until_wrap = vissy_get_buffer_len();
 			}
         }
+		ret = true;
     }
     vissy_unlock();
+/*
+	kiss_fft( vissy_meter->cfg, fin_buf, fout_buf);
 
-    vu_meter->sample_accumulator[0] /= num_samples;
-    vu_meter->sample_accumulator[1] /= num_samples;
+	int avg_ptr;
+	int s;
 
+	// Extract the two separate frequency domain signals
+	// and keep track of the power per bin.
+	avg_ptr = 0;
+	for( s = 0; s < vissy_meter->num_subbands; s++) {
+
+		kiss_fft_cpx ck, cnk;
+
+		float kr = 0, ki = 0;
+		int x;
+
+		for( x = vissy_meter->decade_idx[s]; x < vissy_meter->decade_idx[s] + vissy_meter->decade_len[s]; x ++) {
+			ck = fout_buf[x];
+			cnk = fout_buf[vissy_meter->sample_window - x];
+
+			kr = ( ck.r + cnk.r) / 2;
+			ki = ( ck.i - cnk.i) / 2;
+
+			vissy_meter->avg_power[avg_ptr] += ( kr * kr + ki * ki) / vissy_meter->num_windows;
+
+			kr = ( cnk.i + ck.i) / 2;
+			ki = ( cnk.r - ck.r) / 2;
+
+			vissy_meter->avg_power[avg_ptr+1] += ( kr * kr + ki * ki) / vissy_meter->num_windows;
+		}
+
+		vissy_meter->avg_power[avg_ptr] /= vissy_meter->decade_len[s];
+		vissy_meter->avg_power[avg_ptr+1] /= vissy_meter->decade_len[s];
+		avg_ptr += 2;
+
+	}
+
+	{
+		int pre_ptr = 0;
+		int avg_ptr = 0;
+		int p;
+
+		for( p = 0; p < vissy_meter->num_subbands; p++) {
+
+			long product = (long) ( vissy_meter->avg_power[avg_ptr] * vissy_meter->preemphasis[pre_ptr]);
+
+			product >>= 16;
+			vissy_meter->avg_power[avg_ptr++] = (int) product;
+
+			product = (long) ( vissy_meter->avg_power[avg_ptr] * vissy_meter->preemphasis[pre_ptr]);
+
+			product >>= 16;
+			vissy_meter->avg_power[avg_ptr++] = (int) product;
+
+			pre_ptr++;
+
+		}
+
+	}
+*/
 	for ( channel = 0; channel < METER_CHANNELS; channel++ )
 	{
-		sample_rms[channel] = round( sqrt( sample_sq[channel] ));
-		vu_meter->dBfs[channel] = 20 * log10( (float) sample_rms[channel] /
-												(float) vu_meter->reference );
-		if ( vu_meter->dBfs[channel] < vu_meter->floor )
-			vu_meter->dBfs[channel] = vu_meter->floor;
+
+/*		int power_sum = 0;
+		int in_bar = 0;
+		int curr_bar = 0;
+
+		int avg_ptr = ( 0 == channel ) ? 0 : 1;
+
+		int s;
+
+		for( s = 0; s < vissy_meter->num_subbands; s++) {
+			// Average out the power for all subbands represented
+			// by a bar.
+			power_sum += vissy_meter->avg_power[avg_ptr] / vissy_meter->subbands_in_bar[channel];
+
+			if( ++in_bar == vissy_meter->subbands_in_bar[channel]) {
+				int val;
+				int i;
+
+				power_sum <<= 6; // FIXME scaling
+
+				val = 0;
+				for( i = 31; i > 0; i--) {
+					if( power_sum >= vissy_meter->power_map[i]) {
+						val = i;
+						break;
+					}
+				}
+
+				vissy_meter->sample_bin_chan[channel][curr_bar++] = val;
+
+				if( curr_bar == vissy_meter->num_bars[channel]) {
+					break;
+				}
+
+				in_bar = 0;
+				power_sum = 0;
+
+			}
+			avg_ptr += 2;
+		}
+*/
+		vissy_meter->sample_accum[channel] /= num_samples;
+
+		float avg = sample_sum[channel] / num_samples;
+		vissy_meter->dB[channel] = 20 * log10( (float) avg / 
+												(float) vissy_meter->reference );
+
+		sample_rms[channel] = round( sqrt( sample_sqr[channel] ));
+		vissy_meter->dBfs[channel] = 20 * log10( (float) sample_rms[channel] /
+												(float) vissy_meter->reference );
+		if ( vissy_meter->dBfs[channel] < vissy_meter->floor )
+			vissy_meter->dBfs[channel] = vissy_meter->floor;
+
+		vissy_meter->linear[channel] = abs((int)( (vissy_meter->dB[channel]-MIN_DB) / (MAX_DB-MIN_DB) ) * 100);
+		if ( vissy_meter->linear[channel] > 100 )
+			vissy_meter->linear[channel] = 100;
+
 	}
+
+	return ret;
 	
 }
 
+bool vissy_meter_calc( struct vissy_meter_t *vissy_meter ) 
+{
 
+    int16_t		*ptr;
+	int16_t		sample;
+	uint8_t		channel;
+	uint64_t	sample_sqr[METER_CHANNELS];
+	uint64_t	sample_sum[METER_CHANNELS];
+	uint64_t	sample_rms[METER_CHANNELS];
+	size_t i, num_samples, samples_until_wrap;
+
+	int MIN_DB = 20 * log10( 1.0 / vissy_meter->reference );
+	int MAX_DB = 0;
+
+	int offs;
+
+	num_samples = VUMETER_DEFAULT_SAMPLE_WINDOW;
+
+	vissy_check();
+
+	for ( channel = 0; channel < METER_CHANNELS; channel++ )
+	{
+		vissy_meter->sample_accum[channel] = 0;
+		vissy_meter->linear[channel] = 0;
+		vissy_meter->dB[channel] = -1000;
+		vissy_meter->dBfs[channel] = -1000;
+		vissy_meter->rms_scale[channel] = 0;
+		for (i=0; i < MAX_SUBBANDS; i++) 
+		{
+			vissy_meter->sample_bin_chan[channel][i] = 0;
+		}
+	}
+
+	for( i = 0; i < (2 * vissy_meter->num_subbands); i++)
+	{
+		vissy_meter->avg_power[i] = 0;
+	}
+
+	bool ret = false;
+
+	vissy_lock();
+	if (vissy_is_playing()) {
+
+		ret = true;
+
+		offs = vissy_get_buffer_idx() - (num_samples * 2); // works for FFT with 1 window
+    	while (offs < 0) offs += vissy_get_buffer_len();
+
+        ptr = vissy_get_buffer() + offs;
+        samples_until_wrap = vissy_get_buffer_len() - offs;
+
+        for (i=0; i<num_samples; i++) {
+			for ( channel = 0; channel < METER_CHANNELS; channel++ ) 
+			{
+				sample = (*ptr++) >> 7;
+				sample_sqr[channel] = sample * sample;
+				sample_sum[channel] += abs( sample );
+				vissy_meter->sample_accum[channel] += sample_sqr[channel];
+
+			}
+			samples_until_wrap -= 2;
+			if (samples_until_wrap <= 0) 
+			{
+				ptr = vissy_get_buffer();
+				samples_until_wrap = vissy_get_buffer_len();
+			}
+        }
+
+    }
+    vissy_unlock();
+
+	if (ret)
+	{
+
+		for ( channel = 0; channel < METER_CHANNELS; channel++ )
+		{
+
+			vissy_meter->sample_accum[channel] /= num_samples;
+
+			float avg = sample_sum[channel] / num_samples;
+			vissy_meter->dB[channel] = 20 * log10( (float) avg / 
+													(float) vissy_meter->reference );
+
+			sample_rms[channel] = round( sqrt( sample_sqr[channel] ));
+			vissy_meter->dBfs[channel] = 20 * log10( (float) sample_rms[channel] /
+													(float) vissy_meter->reference );
+			if ( vissy_meter->dBfs[channel] < vissy_meter->floor )
+				vissy_meter->dBfs[channel] = vissy_meter->floor;
+
+			vissy_meter->linear[channel] = abs((int)( (vissy_meter->dB[channel]-MIN_DB) / (MAX_DB-MIN_DB) ) * 100);
+			if ( vissy_meter->linear[channel] > 100 )
+				vissy_meter->linear[channel] = 100;
+
+		}
+	}
+
+	return ret;
+	
+}
+
+//end.
