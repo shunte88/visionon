@@ -1,7 +1,3 @@
-/* Asynchronous SSE Server
- * Author: Peter Deak (hyper80@gmail.com)
- * License: GPL
- */
 #include <sys/types.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,7 +11,7 @@
 #include "cdata.h"
 #include "vovu.h"
 #include "log.h"
-#include "chat.h"
+#include "vcomms.h"
 #include "cio.h"
 
 #define REQ_NULL    0
@@ -68,13 +64,13 @@ static const char mon_name[][4] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "J
 char *par;
 char *subs_par;
 
-struct Hasses_Settings   *p_hsettings;
-struct Hasses_Statistics *p_stats;
+struct vissy_settings *pvisset;
+struct vissy_stats    *pvisstat;
 
-void chat_init(struct Hasses_Settings *se,struct Hasses_Statistics *st)
+void vcomms_init(struct vissy_settings *se,struct vissy_stats *st)
 {
-    p_hsettings = se;
-    p_stats = st;
+    pvisset = se;
+    pvisstat = st;
     par = (char *)malloc(sizeof(char) * MAX_READ_SIZE);
     subs_par = (char *)malloc(sizeof(char) * MAX_READ_SIZE);
 }
@@ -98,10 +94,8 @@ void create_time_line(char *buffer)
 }
 
 
-int chat_received(struct CliConn *client,char *message,const char *url_to_handle)
+int vcomms_received(struct CliConn *client,char *message,const char *url_to_handle)
 {
-
-    toLog(0,">>>>>> chat_recieved <<<<<<\n");
 
     int keepalive = 0;
     int http      = HTTP_BAD;
@@ -118,7 +112,7 @@ int chat_received(struct CliConn *client,char *message,const char *url_to_handle
         if(get_reinit_allowed() && startWithStr(message,"GET "))
         {
             toLog(0,"Re-Initialize client <%d> ...\n",client->descr);
-            ++(p_stats->allreinit);
+            ++(pvisstat->allreinit);
             ++client->reinit;
             client->status = STATUS_NEW;
             client_subscribe_clear(client);
@@ -159,8 +153,6 @@ int chat_received(struct CliConn *client,char *message,const char *url_to_handle
                     break;
                 }
             }
-
-printf("chat_recieved 2\n");
 
             char *httpsign;
             if((httpsign=strstr(l," HTTP/1.1")) != NULL)
@@ -217,38 +209,38 @@ printf("chat_recieved 2\n");
         if(urlmatch != URL_YES)
         {
             toLog(0,"Client request unknown URL, Closing <%d>...\n",client->descr);
-            chat_send_notfound(client);
+            vcomms_send_notfound(client);
             close_client(client->descr);
             return 0;
         }
         if(http != HTTP_11)
         {
             toLog(0,"Client request not HTTP/1.1 protocol, Closing <%d>...\n",client->descr);
-            chat_send_notsupported(client);
+            vcomms_send_notsupported(client);
             close_client(client->descr);
             return 0;
         }
         if(!keepalive)
         {
             toLog(0,"Client not added keep-alive, Closing <%d>...\n",client->descr);
-            chat_send_badreq(client);
+            vcomms_send_badreq(client);
             close_client(client->descr);
             return 0;
         }
 
         toLog(0,"Seems to be SSE request (parameter:%s)\n",par);
-        if(chat_parseparam(client,par) == 0)
+        if(vcomms_parseparam(client,par) == 0)
         {
-            chat_send_handshake(client);
+            vcomms_send_handshake(client);
             toLog(0,"SSE connection: OK <%d>>>>>>>>>>>> start data stream\n",client->descr);
-            ++(p_stats->allclient);
+            ++(pvisstat->allclient);
         }
         else
         {
             toLog(0,"Error in GET parameters. <%d> (Missing or wrong \"subscribe\" parameter)\n"
                     "Closing connection...\n"
                         ,client->descr);
-            chat_send_badreq(client);
+            vcomms_send_badreq(client);
             close_client(client->descr);
         }
         return 0;
@@ -259,20 +251,20 @@ printf("chat_recieved 2\n");
         if(urlmatch != URL_YES)
         {
             toLog(0,"Client request unknown URL, Closing <%d>...\n",client->descr);
-            chat_send_notfound(client);
+            vcomms_send_notfound(client);
             close_client(client->descr);
             return 0;
         }
         if(http != HTTP_11) 
         {
             toLog(0,"Client request not HTTP/1.1 protocol, Closing <%d>...\n",client->descr);
-            chat_send_notsupported(client);
+            vcomms_send_notsupported(client);
             close_client(client->descr);
             return 0;
         }
 
         toLog(0,"Head requested. Send header and close <%d>...\n",client->descr);
-        chat_send_head(client);
+        vcomms_send_head(client);
         close_client(client->descr);
         return 0;
     }
@@ -282,31 +274,31 @@ printf("chat_recieved 2\n");
         if(urlmatch != URL_YES && urlmatch != URL_ALL)
         {
             toLog(0,"Client request unknown URL, Closing <%d>...\n",client->descr);
-            chat_send_notfound(client);
+            vcomms_send_notfound(client);
             close_client(client->descr);
             return 0;
         }
         if(http != HTTP_11) 
         {
             toLog(0,"Client request not HTTP/1.1 protocol, Closing <%d>...\n",client->descr);
-            chat_send_notsupported(client);
+            vcomms_send_notsupported(client);
             close_client(client->descr);
             return 0;
         }
 
         toLog(0,"Options requested. Send header and close <%d>...\n",client->descr);
-        chat_send_options(client);
+        vcomms_send_options(client);
         close_client(client->descr);
         return 0;
     }
 
     toLog(0,"Not supported command received, Closing <%d>...\n",client->descr);
-    chat_send_notsupported(client);
+    vcomms_send_notsupported(client);
     close_client(client->descr);
     return 0;
 }
 
-int chat_parseparam(struct CliConn *client,char *parameters)
+int vcomms_parseparam(struct CliConn *client,char *parameters)
 {
 
     printf("we got: %s\n",parameters);
@@ -372,7 +364,7 @@ int sendmessages(char *buf)
     t = strtok(buf,"=");
     if(t == NULL || strlen(t) > 32)
     {
-        printf("Wrong formatted message from communication channel (1), ignored.\n");
+        toLog(1,"Wrong formatted message from communication channel (1), ignored.\n");
         return 1;
     }
     strncpy(token,t,32);
@@ -381,11 +373,11 @@ int sendmessages(char *buf)
 
     if(t == NULL)
     {
-        printf("Wrong formatted message from communication channel (2), ignored.\n");
+        toLog(1,"Wrong formatted message from communication channel (2), ignored.\n");
         return 1;
     }
 
-    ++(p_stats->allmessage);
+    ++(pvisstat->allmessage);
 
     mm = get_pos(token,'*');
     if(mm == -1)
@@ -403,11 +395,6 @@ int sendmessages(char *buf)
         token[mr] = '\0';
     }
 
-    if(strcmp(rejectId,"") == 0)
-        toLog(0," Message to subscribers of \"%s\" : \"%s\"\n",token,t);
-    else
-        toLog(0," Message to subscribers of \"%s\" except \"%s\" : \"%s\"\n",token,rejectId,t);
-
     client_start();
     while(client_next() != NULL)
     {
@@ -417,9 +404,9 @@ int sendmessages(char *buf)
             {
                 strcpy(send_outbuffer, "");
                 client_current()->message++;
-                ++(p_stats->allsmessage);
-                toLog(0," ->Send to %s <%d>\n",client_current()->info,client_current()->descr);
-                chat_payload_encode(send_outbuffer,t);
+                ++(pvisstat->allsmessage);
+
+                vcomms_payload_encode(send_outbuffer,t);
                 if(cio_high_write(client_current(),send_outbuffer))
                     error_o = 1;
             }
@@ -432,7 +419,7 @@ int sendmessages(char *buf)
         while(client_next() != NULL)
             while(client_current()->err)
             {
-                printf("Close client which signed error at send:\n");
+                toLog(0,"Close client which signed error at send:\n");
                 close_client(client_current()->descr);
             }
     }
@@ -440,25 +427,25 @@ int sendmessages(char *buf)
     return 0;
 }
 
-char chat_chunk_encoding_idbuffer[64];
+char vcomms_chunk_encoding_idbuffer[64];
 
-int chat_payload_encode(char *outbuffer,char *message)
+int vcomms_payload_encode(char *outbuffer,char *message)
 {
     chop(message);
-    snprintf(chat_chunk_encoding_idbuffer,60,"id: %ld\ndata: ",(long)time(NULL));
+    snprintf(vcomms_chunk_encoding_idbuffer,60,"id: %ld\ndata: ",(long)time(NULL));
     snprintf(outbuffer,SSE_PAYLOADMAX,"%s%s\n\n\r\n",
-                chat_chunk_encoding_idbuffer,
+                vcomms_chunk_encoding_idbuffer,
                 message);
     return 0;
 }
 
-int chat_chunk_encoding(char *outbuffer,char *message)
+int vcomms_chunk_encoding(char *outbuffer,char *message)
 {
     chop(message);
-    snprintf(chat_chunk_encoding_idbuffer,60,"id: %ld\ndata: ",(long)time(NULL));
+    snprintf(vcomms_chunk_encoding_idbuffer,60,"id: %ld\ndata: ",(long)time(NULL));
     snprintf(outbuffer,SSE_PAYLOADMAX,"%x\r\n%s%s\n\n\r\n",(unsigned int)
-                (strlen(chat_chunk_encoding_idbuffer) + strlen(message)+2), //+2 is the two \n
-                chat_chunk_encoding_idbuffer,
+                (strlen(vcomms_chunk_encoding_idbuffer) + strlen(message)+2), //+2 is the two \n
+                vcomms_chunk_encoding_idbuffer,
                 message);
     return 0;
 }
@@ -517,7 +504,7 @@ int startWithStr(char *str,const char *pattern)
 
 // -------------------------- http resposes ------------------------------ //
 
-int chat_send_handshake(struct CliConn *client)
+int vcomms_send_handshake(struct CliConn *client)
 {
     char buffer[1024];
     char tbuff[64];
@@ -537,14 +524,14 @@ int chat_send_handshake(struct CliConn *client)
             ///"Transfer-Encoding: chunked\r\n"
             "Content-Type: text/event-stream\r\n\r\n",
                 tbuff,
-                p_hsettings->service);
+                pvisset->service);
 
     cio_high_write(client,buffer);
     client->status = STATUS_COMM;
     return 0;
 }
 
-int chat_send_badreq(struct CliConn *client)
+int vcomms_send_badreq(struct CliConn *client)
 {
     char buffer[1024];
     char tbuff[64];
@@ -559,14 +546,14 @@ int chat_send_badreq(struct CliConn *client)
             "Connection: close\r\n"
             "Content-Type: text/html; charset=utf8\r\n\r\n",
             tbuff,
-            p_hsettings->service,
+            pvisset->service,
             (int)strlen(badrequest_html));
     cio_high_write(client,buffer);
     cio_high_write(client,badrequest_html);
     return 0;
 }
 
-int chat_send_notfound(struct CliConn *client)
+int vcomms_send_notfound(struct CliConn *client)
 {
     char buffer[1024];
     char tbuff[64];
@@ -581,14 +568,14 @@ int chat_send_notfound(struct CliConn *client)
             "Connection: close\r\n"
             "Content-Type: text/html; charset=utf8\r\n\r\n",
             tbuff,
-            p_hsettings->service,
+            pvisset->service,
             (int)strlen(notfound_html));
     cio_high_write(client,buffer);
     cio_high_write(client,notfound_html);
     return 0;
 }
 
-int chat_send_notsupported(struct CliConn *client)
+int vcomms_send_notsupported(struct CliConn *client)
 {
     char buffer[1024];
     char tbuff[64];
@@ -607,14 +594,14 @@ int chat_send_notsupported(struct CliConn *client)
             "Connection: close\r\n"
             "Content-Type: text/html; charset=utf8\r\n\r\n",
                 tbuff,
-                p_hsettings->service,
+                pvisset->service,
                 (int)strlen(badrequest_html));
     cio_high_write(client,buffer);
     cio_high_write(client,badrequest_html);
     return 0;
 }
 
-int chat_send_head(struct CliConn *client)
+int vcomms_send_head(struct CliConn *client)
 {
     char buffer[1024];
     char tbuff[64];
@@ -635,12 +622,12 @@ int chat_send_head(struct CliConn *client)
             //////"Keep-Alive: timeout=300, max=100\r\n"
             "Content-Type: text/event-stream\r\n\r\n",
                 tbuff,
-                p_hsettings->service);
+                pvisset->service);
     cio_high_write(client,buffer);
     return 0;
 }
 
-int chat_send_options(struct CliConn *client)
+int vcomms_send_options(struct CliConn *client)
 {
     char buffer[1024];
     char tbuff[64];
@@ -662,7 +649,7 @@ int chat_send_options(struct CliConn *client)
             ///"Keep-Alive: timeout=300, max=100\r\n"
             "\r\n",
                 tbuff,
-                p_hsettings->service);
+                pvisset->service);
 
     cio_high_write(client,buffer);
     return 0;

@@ -1,9 +1,5 @@
-/* Asynchronous SSE Server
- * Author: Peter Deak (hyper80@gmail.com)
- * License: GPL
- */
-#ifndef HASSES_CDATA_H
-#define HASSES_CDATA_H
+#ifndef VISSY_CDATA_H
+#define VISSY_CDATA_H
 
 #include <time.h>
 
@@ -59,4 +55,5 @@ void client_subscribe_clear (struct CliConn *cli);
 void client_subscribe_list  (struct CliConn *cli,char *sbuf,int max);
 
 #endif
+
 //end code.

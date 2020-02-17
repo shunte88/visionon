@@ -1,5 +1,5 @@
-#ifndef VISSY_H
-#define VISSY_H
+#ifndef VISSY_VIZ_H
+#define VISSY_VIZ_H
 
 #include "kiss_fft.h"
 
@@ -38,6 +38,7 @@ struct peak_meter_t
 
 struct vissy_meter_t
 {
+    char         channel_name    [METER_CHANNELS][2];
     int          is_mono;
     long long    sample_accum    [METER_CHANNELS]; // vu raw peak values.
     int8_t       floor;       // Noise floor for meter (dB).
@@ -67,13 +68,6 @@ struct vissy_meter_t
     float        avg_power       [2 * MAX_SUBBANDS];
     kiss_fft_cfg cfg;
 }VMT;
-
-/*
-void commclient_add(int fd);
-void commclient_del(int fd);
-int  commclient_check(int fd);
-void commclient_debug(void);
-*/
 
 void vissy_close( void );
 void vissy_check( void );

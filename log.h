@@ -3,9 +3,9 @@
 
 #include <stdarg.h>
 
-struct Hasses_Settings;
+struct vissy_settings;
 
-void logInit(struct Hasses_Settings *se);
+void logInit(struct vissy_settings *se);
 void toLog(int level, const char * format, ...);
 
 #endif

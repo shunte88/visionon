@@ -27,22 +27,26 @@
 #include "log.h"
 
 #include "cdata.h"
-#include "chat.h"
+#include "vcomms.h"
 #include "cio.h"
+#include "timer.h"
 
 #define METER_DELAY  1000
 #define PAYLOADMAX   6*1024
 
-struct Hasses_Settings   hsettings;
-struct Hasses_Statistics stats;
+struct vissy_settings visset;
+struct vissy_stats    vistats;
 char   *input = NULL;
 time_t last_cli_ttl_check = 0;
 int    epoll_descriptor;
 char   log_timebuf[80];
+size_t ztimer;
 
 void beforeExit(void)
 {
 	pthread_exit(NULL);
+    timer_stop(ztimer);
+    timer_finalize();
 }
 
 void sigint_handler(int sig)
@@ -78,12 +82,10 @@ void attach_signal_handler(void)
 
 int vissy_cio_high_read(struct CliConn *client,char *buffer)
 {
-    printf("come on...\n");
     if(strlen(buffer) > 0)
     {
         toLog(0,"Received from %s <%d>:\n",client->info,client->descr);
-        chat_received(client,buffer,hsettings.endpoint);
-        toLog(0,"here and the status is %d\n",client->status);
+        vcomms_received(client,buffer,visset.endpoint);
     }
     return 0;
 }
@@ -126,7 +128,7 @@ void checkTimeouts(void)
 
 int get_reinit_allowed(void)
 {
-    return hsettings.reinit_allowed;
+    return visset.reinit_allowed;
 }
 
 void diffsec_to_str(int diff_sec,char *buffer,int max)
@@ -296,7 +298,7 @@ void *initServer( void *x_voidptr )
     cio_low_write_SET(vissy_cio_low_write);
 
     client_init();
-    chat_init(&hsettings,&stats);
+    vcomms_init( &visset, &vistats );
 
     char noop[] = "";
     if (cio_init(false, noop, noop))
@@ -307,7 +309,7 @@ void *initServer( void *x_voidptr )
     }
 
     toLog(2,"Open SSE port to listen...\n");
-    sfd = create_and_bind(hsettings.port);
+    sfd = create_and_bind(visset.port);
     if (sfd == -1)
     {
         toLog(0,"Exiting due to previous error...\n");
@@ -349,10 +351,8 @@ void *initServer( void *x_voidptr )
 
     toLog(2,"Epoll created.\n");
 
-    /* Buffer where events are returned */
     events = calloc (MAXEVENTS, sizeof event);
 
-    /* The event loop */
     toLog(2,"Starting main event loop...\n");
 
     while(true)
@@ -441,8 +441,8 @@ void *initServer( void *x_voidptr )
 
                     ccount = client_count();
                     toLog(0,"Added to the list (%d).\n",ccount);
-                    if(stats.maxclients < ccount)
-                        stats.maxclients = ccount;
+                    if(vistats.maxclients < ccount)
+                        vistats.maxclients = ccount;
 
                 }
                 continue;
@@ -454,7 +454,7 @@ void *initServer( void *x_voidptr )
                    completely, as we are running in edge-triggered mode
                    and won't get a notification again for the same
                    data. */
-                int done = 0;
+                bool done = false;
                 input[0] = '\0';
                 char *input_p = input;
 
@@ -470,13 +470,13 @@ void *initServer( void *x_voidptr )
                         if (errno != EAGAIN)
                         {
                             toLog(1,"Error, read() failure (2) closing client...\n");
-                            done = 1;
+                            done = true;
                         }
                         break;
                     }
                     else if (count == 0)
                     {
-                        done = 1;
+                        done = true;
                         break;
                     }
                     fullcount += count;
@@ -504,27 +504,85 @@ void *initServer( void *x_voidptr )
 
 }
 
-// https://github.com/warmcat/libwebsockets/blob/master/minimal-examples/http-server/minimal-http-server-sse/minimal-http-server-sse.c
+void construct_payload(const struct vissy_meter_t vissy_meter, char * meter, char * payload)
+{
+    int numFFT = 0;
+    char delim[1] = "";	
+    char scratch[PAYLOADMAX];
+
+    // construct the JSON payload
+
+    strncpy( payload, "", PAYLOADMAX );
+    sprintf( scratch, "{\"type\":\"%s\",\"channel\":[",meter);
+    strcat( payload, scratch );
+
+    for ( int channel = 0; channel < METER_CHANNELS; channel++ )
+    {
+
+        // simple JSON format - non-too complex (as yet) so we roll oour own
+        strcat( payload, delim );
+        sprintf( scratch, "{\"name\":\"%c\",\"accumulated\":%lld,",
+            vissy_meter.channel_name[channel][0],
+            vissy_meter.sample_accum[channel]);
+        strcat( payload, scratch );
+        sprintf( scratch, "\"scaled\":%d,\"dBfs\":%lld,\"dB\":%lld,",
+            vissy_meter.rms_bar[channel],
+            vissy_meter.dBfs[channel],
+            vissy_meter.dB[channel]);
+        strcat( payload, scratch );
+        sprintf( scratch, "\"linear\":%lld,",
+            vissy_meter.linear[channel]);
+        strcat( payload, scratch );
+        sprintf( scratch, "\"FFT\":[%s],",
+            jints(vissy_meter.sample_bin_chan[channel], ",", &numFFT));
+        strcat( payload, scratch );
+        sprintf( scratch, "\"numFFT\":%d}", numFFT);
+        strcat( payload, scratch );
+        delim[0] = ',';
+
+    }
+    strcat( payload, "]}");
+
+}
+
+void zero_payload( size_t timer_id, void * user_data )
+{
+	char meter[] = "VU";
+	char payload[PAYLOADMAX];
+	struct vissy_meter_t vissy_meter =
+	{
+        .channel_name       = {"L","R"},
+		.sample_accum		= {0, 0},
+		.rms_bar			= {0, 0},
+		.dBfs				= {-1000, -1000},
+		.dB 				= {-1000, -1000},
+		.linear 			= {0, 0}
+    };
+    
+    construct_payload( vissy_meter, meter, payload );
+    publish(meter, payload);
+
+}
 
 int main( int argi, char **argc )
 {
 
-    strcpy(hsettings.service,"VisionOn");
+    strcpy(visset.service,"VisionOn");
 	
-    hsettings.port = 8022;
-    hsettings.loglevel = 1;
-    hsettings.reinit_allowed = false;
-    hsettings.daemon = true;
+    visset.port = 8022;
+    visset.loglevel = 1;
+    visset.reinit_allowed = false;
+    visset.daemon = true;
 
-    strcpy(hsettings.endpoint, "/visionon");
-    strcpy(hsettings.logfile,"/var/log/visionon.log");
+    strcpy(visset.endpoint, "/visionon");
+    strcpy(visset.logfile, "/var/log/visionon.log");
 
-    stats.startDaemon = 0;
-    stats.maxclients  = 0;
-    stats.allclient   = 0;
-    stats.allreinit   = 0;
-    stats.allmessage  = 0;
-    stats.allsmessage = 0;
+    vistats.startDaemon = 0;
+    vistats.maxclients  = 0;
+    vistats.allclient   = 0;
+    vistats.allreinit   = 0;
+    vistats.allmessage  = 0;
+    vistats.allsmessage = 0;
 
     strcpy(log_timebuf,"error:");
 
@@ -542,42 +600,42 @@ int main( int argi, char **argc )
 
         if(!strcmp(argc[p],"-q"))
         {
-            hsettings.loglevel = 0;
+            visset.loglevel = 0;
             continue;
         }
         if(!strcmp(argc[p],"-debug"))
         {
-            hsettings.loglevel = 2;
+            visset.loglevel = 2;
             continue;
         }
 
         if(!strcmp(argc[p],"-ra"))
         {
-            hsettings.reinit_allowed = true;
+            visset.reinit_allowed = true;
             continue;
         }
 
         if(!strcmp(argc[p],"-nodaemon"))
         {
-            hsettings.daemon = false;
+            visset.daemon = false;
             continue;
         }
 
         if(!strncmp(argc[p],"-uri=",5))
         {
-            strncpy(hsettings.endpoint,argc[p]+5,64);
+            strncpy(visset.endpoint,argc[p]+5,64);
             continue;
         }
 
         if(!strncmp(argc[p],"-p=",3))
         {
-            if(sscanf(argc[p]+3,"%d",&hsettings.port) == 1 && hsettings.port > 0)
+            if(sscanf(argc[p]+3,"%d",&visset.port) == 1 && visset.port > 0)
                 continue;
         }
 
         if(!strncmp(argc[p],"-l=",3))
         {
-            strncpy(hsettings.logfile,argc[p]+3,128);
+            strncpy(visset.logfile,argc[p]+3,128);
             continue;
         }
 
@@ -588,38 +646,38 @@ int main( int argi, char **argc )
         }
     }
 
-    if(strlen(hsettings.endpoint) == 0 ||
-       hsettings.port == 0 )
+    if(strlen(visset.endpoint) == 0 ||
+       visset.port == 0 )
     {
         printhelp();
         return 0;
     }
 
-    if ( hsettings.logfile[0] != '/' )
+    if ( visset.logfile[0] != '/' )
     {
         fprintf(stderr,"WARNING: Use absolute path to specify log file!\n");
         return 0;
     }
 
-    stats.startDaemon = time(NULL);
+    vistats.startDaemon = time(NULL);
 
-	logInit(&hsettings);
+	logInit(&visset);
     printf("\n=== daemon starting ===\n");
 
-    if(hsettings.loglevel > 1)
+    if(visset.loglevel > 1)
     {
         printf("Parameters:\n");
-        printf(" Log Level ......: %d\n",hsettings.loglevel);
-        printf(" Endpoint .......: %s\n",hsettings.endpoint);
-        printf(" TCP Port (SSE) .: %d\n",hsettings.port);
-        printf(" Log file .......: %s\n",hsettings.logfile);
+        printf(" Log Level ......: %d\n",visset.loglevel);
+        printf(" Endpoint .......: %s\n",visset.endpoint);
+        printf(" TCP Port (SSE) .: %d\n",visset.port);
+        printf(" Log file .......: %s\n",visset.logfile);
 
         fflush(stdout);
     }
 
-    if (hsettings.daemon)
+    if (visset.daemon)
     {
-        if(hsettings.loglevel > 0)
+        if(visset.loglevel > 0)
             toLog(0,"Started, entering daemon mode...\n");
 
         if(daemon(0,0) == -1)
@@ -646,6 +704,7 @@ int main( int argi, char **argc )
 
 	struct vissy_meter_t vissy_meter =
 	{
+        .channel_name       = {"L","R"},
 		.sample_accum		= {0, 0},
 		.rms_bar			= {0, 0},
 		.dBfs				= {-1000, -1000},
@@ -681,8 +740,10 @@ int main( int argi, char **argc )
 
 	char meter[] = "VU";
 	char payload[PAYLOADMAX];
-	int  i, blx;
-    static const char channel_name[METER_CHANNELS][2] = { "L", "R" };
+	int  i;
+
+    timer_initialize();
+    ztimer = timer_start(100, zero_payload, TIMER_SINGLE_SHOT, NULL);
 
 	while (true)
 	{
@@ -704,45 +765,12 @@ int main( int argi, char **argc )
                 //vissy_meter.rms_charbar[channel][i] = 0;
             }
 
-            int numFFT = 0;
-            char delim[1] = "";	
-            char scratch[PAYLOADMAX];
+            construct_payload(vissy_meter, meter, payload);
+            publish(meter, payload); // construct, and now publish JSON
 
-            // construct the message JSON
-
-            strncpy( payload, "", PAYLOADMAX );
-            sprintf( scratch, "{\"type\":\"%s\",\"channel\":[",meter);
-            strcat( payload, scratch );
-
-            for ( channel = 0; channel < METER_CHANNELS; channel++ )
-            {
-
-                // simple JSON format - non-too complex (as yet)
-                strcat( payload, delim );
-                sprintf( scratch, "{\"name\":\"%c\",\"accumulated\":%lld,",
-                    channel_name[channel][0],
-                    vissy_meter.sample_accum[channel]);
-                strcat( payload, scratch );
-                sprintf( scratch, "\"scaled\":%d,\"dBfs\":%lld,\"dB\":%lld,",
-                    vissy_meter.rms_bar[channel],
-                    vissy_meter.dBfs[channel],
-                    vissy_meter.dB[channel]);
-                strcat( payload, scratch );
-                sprintf( scratch, "\"linear\":%lld,",
-                    vissy_meter.linear[channel]);
-                strcat( payload, scratch );
-                sprintf( scratch, "\"FFT\":[%s],",
-                    jints(vissy_meter.sample_bin_chan[channel], ",", &numFFT));
-                strcat( payload, scratch );
-                sprintf( scratch, "\"numFFT\":%d}", numFFT);
-                strcat( payload, scratch );
-                delim[0] = ',';
-
-            }
-
-            strcat( payload, "]}" );
-            // and publish JSON
-            publish(meter, payload);
+            // cleanup (zero meter) timer - when the toons stop we zero
+            timer_stop(ztimer);
+            ztimer = timer_start(5000, zero_payload, TIMER_SINGLE_SHOT, NULL);
 
         }
 
@@ -752,6 +780,7 @@ int main( int argi, char **argc )
 
 	vissy_close();
 	pthread_kill(thread_id, SIGUSR1);
+    timer_finalize();
 
 	return 0;
 

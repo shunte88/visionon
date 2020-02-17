@@ -14,25 +14,25 @@
 time_t log_oldrawtime=1;
 char   log_timebuf[80];
 
-struct Hasses_Settings   *p_hsettings;
+struct vissy_settings   *pvisset;
 
-void logInit(struct Hasses_Settings *se)
+void logInit(struct vissy_settings *se)
 {
-   p_hsettings = se;
+   pvisset = se;
 }
 
 void toLog(int level, const char * format, ...)
 {
-    if(level <= p_hsettings->loglevel)
+    if(level <= pvisset->loglevel)
     {
-        if (p_hsettings->daemon)
+        if (pvisset->daemon)
         {
             FILE *logf;
 
-            logf = fopen(p_hsettings->logfile,"a");
+            logf = fopen(pvisset->logfile,"a");
             if(logf == NULL)
             {
-                fprintf(stderr,"Error opening log file: %s\n",p_hsettings->logfile);
+                fprintf(stderr,"Error opening log file: %s\n",pvisset->logfile);
                 exit(1);
             }
 
