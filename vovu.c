@@ -246,9 +246,9 @@ int close_client(int d)
 
 int printhelp(void)
 {
-    printf("Async SSE (Server Sent Event) visualization server\n"
+    printf("VisionOn SSE (EventServer) Visualization Service\n"
            "Usage:\n visionon -p=<SSE_PORT> -uri=<ENDPOINT_URI>\n"
-                   "        [-q|-debug] [-l=<LOGFILE>]\n"
+                   "        [-quiet | -debug] [-l=<LOGFILE>]\n"
                    "        [-ra] [-nodaemon]\n\n");
     return 0;
 
@@ -598,7 +598,7 @@ int main( int argi, char **argc )
         if(!strcmp(argc[p],"-h") || !strcmp(argc[p],"-help"))
             return printhelp();
 
-        if(!strcmp(argc[p],"-q"))
+        if(!strcmp(argc[p],"-quiet"))
         {
             visset.loglevel = 0;
             continue;
@@ -666,10 +666,31 @@ int main( int argi, char **argc )
 
     if(visset.loglevel > 1)
     {
+
+        toLog(0,"\n__      ___     _                ____\n");
+        toLog(0,"\\ \\    / (_)   (_)              / __ \\\n");
+        toLog(0," \\ \\  / / _ ___ _  ___  _ __   | |  | |_ __\n");
+        toLog(0,"  \\ \\/ / | / __| |/ _ \\| '_ \\  | |  | | '_ \\\n");
+        toLog(0,"   \\  /  | \\__ \\ | (_) | | | | | |__| | | | |\n");
+        toLog(0,"    \\/   |_|___/_|\\___/|_| |_|  \\____/|_| |_|\n\n");
+
+        toLog(0,"Parameters:\n");
+        toLog(0," TCP Port (SSE) .: %d\n",visset.port);
+        toLog(0," Endpoint .......: %s\n",visset.endpoint);
+        toLog(0," Log Level ......: %d\n",visset.loglevel);
+        toLog(0," Log file .......: %s\n",visset.logfile);
+
+        printf("\n__      ___     _                ____\n");
+        printf("\\ \\    / (_)   (_)              / __ \\\n");
+        printf(" \\ \\  / / _ ___ _  ___  _ __   | |  | |_ __\n");
+        printf("  \\ \\/ / | / __| |/ _ \\| '_ \\  | |  | | '_ \\\n");
+        printf("   \\  /  | \\__ \\ | (_) | | | | | |__| | | | |\n");
+        printf("    \\/   |_|___/_|\\___/|_| |_|  \\____/|_| |_|\n\n");
+
         printf("Parameters:\n");
-        printf(" Log Level ......: %d\n",visset.loglevel);
-        printf(" Endpoint .......: %s\n",visset.endpoint);
         printf(" TCP Port (SSE) .: %d\n",visset.port);
+        printf(" Endpoint .......: %s\n",visset.endpoint);
+        printf(" Log Level ......: %d\n",visset.loglevel);
         printf(" Log file .......: %s\n",visset.logfile);
 
         fflush(stdout);
