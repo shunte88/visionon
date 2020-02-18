@@ -31,7 +31,7 @@
 #include "cio.h"
 #include "timer.h"
 
-#define METER_DELAY  1000
+#define METER_DELAY  2*1000
 #define PAYLOADMAX   6*1024
 
 struct vissy_settings visset;
@@ -40,12 +40,10 @@ char   *input = NULL;
 time_t last_cli_ttl_check = 0;
 int    epoll_descriptor;
 char   log_timebuf[80];
-size_t ztimer;
 
 void beforeExit(void)
 {
 	pthread_exit(NULL);
-    timer_stop(ztimer);
     timer_finalize();
 }
 
@@ -105,7 +103,7 @@ int vissy_cio_low_write(struct CliConn *client,char *buffer,int length)
     return 0;
 }
 
-void checkTimeouts(void)
+void check_timeouts(void)
 {
     time_t t = time(NULL);
     if(last_cli_ttl_check + CLIENT_CHK_TIME_INTERVAL >= t)
@@ -254,14 +252,20 @@ int printhelp(void)
 
 }
 
-void publish( char *subevent, char *payload )
+int showme = 0;
+void publish( const char *subevent, char *payload )
 {
 	char fm[PAYLOADMAX+3]; 
     strncpy( fm, "", PAYLOADMAX+3 );
     strcat( fm, subevent );
     strcat( fm, "=" );
     strcat( fm, payload );
-    sendmessages(fm);
+    if ( showme < 10) {
+        printf("%s\n",fm);
+    }
+    if (fm[0]!='=') // skip junk
+        sendmessages(fm);
+    showme++;
 
 }
 
@@ -359,7 +363,7 @@ void *initServer( void *x_voidptr )
     {
         int n,i;
 
-        checkTimeouts();
+        check_timeouts();
         n = epoll_wait (epoll_descriptor, events, MAXEVENTS, -1);
         for (i = 0; i < n; i++)
         {
@@ -504,7 +508,7 @@ void *initServer( void *x_voidptr )
 
 }
 
-void construct_payload(const struct vissy_meter_t vissy_meter, char * meter, char * payload)
+void construct_payload(const struct vissy_meter_t vissy_meter, const char * meter, char * payload)
 {
     int numFFT = 0;
     char delim[1] = "";	
@@ -545,9 +549,17 @@ void construct_payload(const struct vissy_meter_t vissy_meter, char * meter, cha
 
 }
 
+char* payload_mode(bool samode)
+{
+    if (samode)
+        return "SA";
+    
+    return "VU";
+}
+
 void zero_payload( size_t timer_id, void * user_data )
 {
-	char meter[] = "VU";
+
 	char payload[PAYLOADMAX];
 	struct vissy_meter_t vissy_meter =
 	{
@@ -559,8 +571,11 @@ void zero_payload( size_t timer_id, void * user_data )
 		.linear 			= {0, 0}
     };
     
-    construct_payload( vissy_meter, meter, payload );
-    publish(meter, payload);
+    for (int i=0; i<2; i++)
+    {
+        construct_payload( vissy_meter, payload_mode(i), payload );
+        publish(payload_mode(i), payload);
+    }
 
 }
 
@@ -577,7 +592,7 @@ int main( int argi, char **argc )
     strcpy(visset.endpoint, "/visionon");
     strcpy(visset.logfile, "/var/log/visionon.log");
 
-    vistats.startDaemon = 0;
+    vistats.started     = 0;
     vistats.maxclients  = 0;
     vistats.allclient   = 0;
     vistats.allreinit   = 0;
@@ -659,42 +674,12 @@ int main( int argi, char **argc )
         return 0;
     }
 
-    vistats.startDaemon = time(NULL);
+    vistats.started = time(NULL);
 
 	logInit(&visset);
     printf("\n=== daemon starting ===\n");
 
-    if(visset.loglevel > 1)
-    {
-
-        toLog(0,"\n__      ___     _                ____\n");
-        toLog(0,"\\ \\    / (_)   (_)              / __ \\\n");
-        toLog(0," \\ \\  / / _ ___ _  ___  _ __   | |  | |_ __\n");
-        toLog(0,"  \\ \\/ / | / __| |/ _ \\| '_ \\  | |  | | '_ \\\n");
-        toLog(0,"   \\  /  | \\__ \\ | (_) | | | | | |__| | | | |\n");
-        toLog(0,"    \\/   |_|___/_|\\___/|_| |_|  \\____/|_| |_|\n\n");
-
-        toLog(0,"Parameters:\n");
-        toLog(0," TCP Port (SSE) .: %d\n",visset.port);
-        toLog(0," Endpoint .......: %s\n",visset.endpoint);
-        toLog(0," Log Level ......: %d\n",visset.loglevel);
-        toLog(0," Log file .......: %s\n",visset.logfile);
-
-        printf("\n__      ___     _                ____\n");
-        printf("\\ \\    / (_)   (_)              / __ \\\n");
-        printf(" \\ \\  / / _ ___ _  ___  _ __   | |  | |_ __\n");
-        printf("  \\ \\/ / | / __| |/ _ \\| '_ \\  | |  | | '_ \\\n");
-        printf("   \\  /  | \\__ \\ | (_) | | | | | |__| | | | |\n");
-        printf("    \\/   |_|___/_|\\___/|_| |_|  \\____/|_| |_|\n\n");
-
-        printf("Parameters:\n");
-        printf(" TCP Port (SSE) .: %d\n",visset.port);
-        printf(" Endpoint .......: %s\n",visset.endpoint);
-        printf(" Log Level ......: %d\n",visset.loglevel);
-        printf(" Log file .......: %s\n",visset.logfile);
-
-        fflush(stdout);
-    }
+    banner();
 
     if (visset.daemon)
     {
@@ -711,14 +696,14 @@ int main( int argi, char **argc )
     else
     {
         printf("\nDaemon mode is disabled!\n"
-                "All messages written to the standard output!\n"
-                "Log file will not be used!\n\n");
+                "All messages written to standard output!\n"
+                "The log file will not be used!\n\n");
     }
 
     attach_signal_handler();
 
 	pthread_t thread_id;
-	uint8_t channel;
+	uint8_t   channel;
 
 	pthread_create(&thread_id, NULL, initServer, NULL);
 	sleep(1); // bring server online
@@ -759,17 +744,22 @@ int main( int argi, char **argc )
 	vissy_check();
     vissy_meter_init( &vissy_meter );
 
-	char meter[] = "VU";
 	char payload[PAYLOADMAX];
 	int  i;
 
+    bool samode = false;
+    size_t ztimer;
+
+    // "closure" timer
     timer_initialize();
     ztimer = timer_start(100, zero_payload, TIMER_SINGLE_SHOT, NULL);
+
+    toLog(0,"Monitoring ...\n");
 
 	while (true)
 	{
 
-        if ( vissy_meter_calc( &vissy_meter ) )
+        if ( vissy_meter_calc( &vissy_meter, samode ) )
         {
 
             for ( channel = 0; channel < METER_CHANNELS; channel++ )
@@ -786,12 +776,14 @@ int main( int argi, char **argc )
                 //vissy_meter.rms_charbar[channel][i] = 0;
             }
 
-            construct_payload(vissy_meter, meter, payload);
-            publish(meter, payload); // construct, and now publish JSON
+            construct_payload(vissy_meter, payload_mode(samode), payload);
+            publish(payload_mode(samode), payload); // construct, and now publish JSON
 
             // cleanup (zero meter) timer - when the toons stop we zero
             timer_stop(ztimer);
             ztimer = timer_start(5000, zero_payload, TIMER_SINGLE_SHOT, NULL);
+            // modal dataset
+            samode = !samode;
 
         }
 
@@ -807,5 +799,52 @@ int main( int argi, char **argc )
 
 }
 
+void banner( void )
+{
+    if(visset.loglevel > 1)
+    {
+
+        if (visset.daemon)
+        {
+            toLog(0,"\n\n");
+            toLog(0,"__      ___     _                ____\n");
+            toLog(0,"\\.\\    / (_)   (_)              / __ \\\n");
+            toLog(0," \\.\\  / / _ ___ _  ___  _ __   |.|  | |_ __\n");
+            toLog(0,"  \\.\\/ / | / __| |/ _ \\| '_ \\  |.|  | | '_ \\\n");
+            toLog(0,"   \\. /  | \\__ \\ | (_) | | | | |.|__| | | | |\n");
+            toLog(0,"    \\/   |_|___/_|\\___/|_| |_|  \\____/|_| |_|\n");
+            toLog(0,"     Version %s.\n",VERSION);
+            toLog(0,"\n");
+
+            toLog(0,"Parameters:\n");
+            toLog(0," - TCP Port (SSE) ...: %d\n",visset.port);
+            toLog(0," - Endpoint .........: %s\n",visset.endpoint);
+            toLog(0," - Re-Init Allowed ..: %d\n",visset.reinit_allowed);
+            toLog(0," - Log Level ........: %d\n",visset.loglevel);
+            toLog(0," - Log file .........: %s\n",visset.logfile);
+        }
+        else
+        {
+            printf("\n__      ___     _                ____\n");
+            printf("\\.\\    / (_)   (_)              / __ \\\n");
+            printf(" \\.\\  / / _ ___ _  ___  _ __   |.|  | |_ __\n");
+            printf("  \\.\\/ / | / __| |/ _ \\| '_ \\  |.|  | | '_ \\\n");
+            printf("   \\. /  | \\__ \\ | (_) | | | | |.|__| | | | |\n");
+            printf("    \\/   |_|___/_|\\___/|_| |_|  \\____/|_| |_|\n");
+            printf("     Version %s.\n\n",VERSION);
+
+            printf("Parameters:\n");
+            printf(" - TCP Port (SSE) ...: %d\n",visset.port);
+            printf(" - Endpoint .........: %s\n",visset.endpoint);
+            printf(" - Re-Init Allowed ..: %d\n",visset.reinit_allowed);
+            printf(" - Log Level ........: %d\n",visset.loglevel);
+            printf(" - Log file .........: %s\n",visset.logfile);
+
+            fflush(stdout);
+        }
+        
+    }
+
+}
 
 //end.

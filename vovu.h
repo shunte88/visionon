@@ -26,7 +26,7 @@ struct vissy_settings
 
 struct vissy_stats
 {
-    time_t startDaemon;
+    time_t        started; // calc uptime of daemon
     unsigned long maxclients;
     unsigned long allclient;
     unsigned long allreinit;
@@ -34,13 +34,13 @@ struct vissy_stats
     unsigned long allsmessage;
 };
 
-void checkTimeouts(void);
+char* payload_mode(bool samode);
+void banner(void);
+void check_timeouts(void);
 int close_client(int d);
 int get_reinit_allowed(void);
 void diffsec_to_str(int diff_sec,char *buffer,int max);
 void beforeExit(void);
-
-/// these we do not need?
 
 struct CommCli {
     int fd;

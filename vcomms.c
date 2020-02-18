@@ -228,7 +228,7 @@ int vcomms_received(struct CliConn *client,char *message,const char *url_to_hand
             return 0;
         }
 
-        toLog(0,"Seems to be SSE request (parameter:%s)\n",par);
+        toLog(0,"SSE request (parameter:%s)\n",par);
         if(vcomms_parseparam(client,par) == 0)
         {
             vcomms_send_handshake(client);
@@ -301,8 +301,6 @@ int vcomms_received(struct CliConn *client,char *message,const char *url_to_hand
 int vcomms_parseparam(struct CliConn *client,char *parameters)
 {
 
-    printf("we got: %s\n",parameters);
-
     int i;
     char *p,*st;
 
@@ -364,6 +362,7 @@ int sendmessages(char *buf)
     t = strtok(buf,"=");
     if(t == NULL || strlen(t) > 32)
     {
+        printf("%s\n",buf);
         toLog(1,"Wrong formatted message from communication channel (1), ignored.\n");
         return 1;
     }
@@ -373,7 +372,7 @@ int sendmessages(char *buf)
 
     if(t == NULL)
     {
-        toLog(1,"Wrong formatted message from communication channel (2), ignored.\n");
+        toLog(1,"Wrong formatted message (null) from communication channel (2), ignored.\n");
         return 1;
     }
 
@@ -408,7 +407,11 @@ int sendmessages(char *buf)
 
                 vcomms_payload_encode(send_outbuffer,t);
                 if(cio_high_write(client_current(),send_outbuffer))
+                {
                     error_o = 1;
+                    toLog(2,"%s\n",send_outbuffer);
+                }
+
             }
         }
     }
@@ -419,7 +422,8 @@ int sendmessages(char *buf)
         while(client_next() != NULL)
             while(client_current()->err)
             {
-                toLog(0,"Close client which signed error at send:\n");
+                toLog(0,"Error on send, closing client %s:\n",client_current()->uniq_id);
+                // need to resolve rather than terminate???
                 close_client(client_current()->descr);
             }
     }

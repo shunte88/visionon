@@ -561,7 +561,7 @@ bool stashvissy_meter_calc( struct vissy_meter_t *vissy_meter ) {
 	
 }
 
-bool vissy_meter_calc( struct vissy_meter_t *vissy_meter ) 
+bool vissy_meter_calc( struct vissy_meter_t *vissy_meter, bool samode ) 
 {
 
     int16_t		*ptr;
@@ -599,6 +599,8 @@ bool vissy_meter_calc( struct vissy_meter_t *vissy_meter )
 		vissy_meter->avg_power[i] = 0;
 	}
 
+	kiss_fft_cpx fin_buf[MAX_SAMPLE_WINDOW];
+	kiss_fft_cpx fout_buf[MAX_SAMPLE_WINDOW];
 	bool ret = false;
 
 	vissy_lock();
@@ -615,12 +617,22 @@ bool vissy_meter_calc( struct vissy_meter_t *vissy_meter )
         for (i=0; i<num_samples; i++) {
 			for ( channel = 0; channel < METER_CHANNELS; channel++ ) 
 			{
-				sample = (*ptr++) >> 7;
+				if ( !samode )
+					sample = (*ptr++) >> 8;
+				else
+					sample = (*ptr++) >> 7; //7;
+
 				sample_sqr[channel] = sample * sample;
 				sample_sum[channel] += abs( sample );
 				vissy_meter->sample_accum[channel] += sample_sqr[channel];
-
+				if ( 0 == channel) {
+					fin_buf[i].r = (float) (vissy_meter->filter_window[i] * sample);
+				} else {
+					fin_buf[i].i = (float) (vissy_meter->filter_window[i] * sample);
+				}
+				
 			}
+
 			samples_until_wrap -= 2;
 			if (samples_until_wrap <= 0) 
 			{
@@ -635,9 +647,112 @@ bool vissy_meter_calc( struct vissy_meter_t *vissy_meter )
 	if (ret)
 	{
 
+		if (samode) // SA mode
+		{
+
+			kiss_fft( vissy_meter->cfg, fin_buf, fout_buf);
+
+			int avg_ptr = 0;
+
+			// Extract the two separate frequency domain signals
+			// and keep track of the power per bin.
+			for( int s = 0; s < vissy_meter->num_subbands; s++) {
+
+				kiss_fft_cpx ck, cnk;
+
+				float kr = 0, ki = 0;
+				int x;
+
+				for( x = vissy_meter->decade_idx[s]; x < vissy_meter->decade_idx[s] + vissy_meter->decade_len[s]; x ++) {
+					ck = fout_buf[x];
+					cnk = fout_buf[vissy_meter->sample_window - x];
+
+					kr = ( ck.r + cnk.r) / 2;
+					ki = ( ck.i - cnk.i) / 2;
+
+					vissy_meter->avg_power[avg_ptr] += ( kr * kr + ki * ki) / vissy_meter->num_windows;
+
+					kr = ( cnk.i + ck.i) / 2;
+					ki = ( cnk.r - ck.r) / 2;
+
+					vissy_meter->avg_power[avg_ptr+1] += ( kr * kr + ki * ki) / vissy_meter->num_windows;
+				}
+
+				vissy_meter->avg_power[avg_ptr] /= vissy_meter->decade_len[s];
+				vissy_meter->avg_power[avg_ptr+1] /= vissy_meter->decade_len[s];
+
+				avg_ptr += 2;
+
+			}
+
+			int pre_ptr = 0;
+
+			avg_ptr = 0;
+			for( int p = 0; p < vissy_meter->num_subbands; p++) {
+
+				long product = (long) ( vissy_meter->avg_power[avg_ptr] * vissy_meter->preemphasis[pre_ptr]);
+
+				product >>= 16;
+				vissy_meter->avg_power[avg_ptr++] = (int) product;
+
+				product = (long) ( vissy_meter->avg_power[avg_ptr] * vissy_meter->preemphasis[pre_ptr]);
+
+				product >>= 16;
+				vissy_meter->avg_power[avg_ptr++] = (int) product;
+
+				pre_ptr++;
+
+			}
+
+		}
+
 		for ( channel = 0; channel < METER_CHANNELS; channel++ )
 		{
 
+			if (samode)
+			{
+				int power_sum = 0;
+				int in_bar = 0;
+				int curr_bar = 0;
+
+				int avg_ptr = ( 0 == channel ) ? 0 : 1;
+
+				int s;
+
+				for( s = 0; s < vissy_meter->num_subbands; s++) {
+					// Average out the power for all subbands represented
+					// by a bar.
+					power_sum += vissy_meter->avg_power[avg_ptr] / vissy_meter->subbands_in_bar[channel];
+
+					if( ++in_bar == vissy_meter->subbands_in_bar[channel]) {
+						int val;
+						int i;
+
+						power_sum <<= 6; // FIXME scaling - 6 is height ???
+
+						val = 0;
+						for( i = 31; i > 0; i--) {
+							if( power_sum >= vissy_meter->power_map[i]) {
+								val = i;
+								break;
+							}
+						}
+
+						vissy_meter->sample_bin_chan[channel][curr_bar++] = val;
+
+						if( curr_bar == vissy_meter->num_bars[channel]) {
+							break;
+						}
+
+						in_bar = 0;
+						power_sum = 0;
+
+					}
+					avg_ptr += 2;
+				}
+
+			}
+		
 			vissy_meter->sample_accum[channel] /= num_samples;
 
 			float avg = sample_sum[channel] / num_samples;
