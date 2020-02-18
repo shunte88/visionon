@@ -1,0 +1,13 @@
+# roll visualizer service - not is first column on pCP
+
+sudo kill -1 `ps aux | grep visionon | awk '{print $1}'`
+sudo rm /tmp/visionon.log
+
+if [ $# -gt 0 ]; then
+  sleep 5
+fi
+
+/mnt/mmcblk0p2/tce/visionon -debug -p=8022 -uri=/visionon -l=/tmp/visionon.log -ra
+
+sudo chmod 777 /tmp/visionon.log
+
