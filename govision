@@ -7,7 +7,7 @@ if [ $# -gt 0 ]; then
   sleep 5
 fi
 
-/mnt/mmcblk0p2/tce/visionon -debug -p=8022 -uri=/visionon -l=/tmp/visionon.log -ra
+/mnt/mmcblk0p2/tce/visionon -debug -p=8022 -uri=/visionon -l=/tmp/visionon.log -ra -hard
 
 sudo chmod 777 /tmp/visionon.log
 

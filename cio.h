@@ -24,18 +24,18 @@
 */
 
 /** Init cio subsystem, it must called once at program before any cio* func. */
-int cio_init(bool use_ssl,const char *certfile,const char *pkeyfile);
+int cio_init(bool use_ssl, const char *certfile, const char *pkeyfile);
 
 /** Close/free the specified client */
 int cio_client_close(struct CliConn *client);
 
-int cio_high_write(struct CliConn *client,char *buffer);
-void cio_high_read_SET(int (*c)(struct CliConn *,char *));
+int cio_high_write(struct CliConn *client, char *buffer);
+void cio_high_read_SET(int (*c)(struct CliConn *, char *));
 
-int cio_low_read(struct CliConn *client,char *buffer,int length);
-void cio_low_write_SET(int (*c)(struct CliConn *,char *,int));
+int cio_low_read(struct CliConn *client, char *buffer, int length);
+void cio_low_write_SET(int (*c)(struct CliConn *, char *, int));
 
-int cio_info_text(struct CliConn *client,char *buffer,int maxlen);
-    
+int cio_info_text(struct CliConn *client, char *buffer, int maxlen);
+
 #endif
-//end.
+// end.

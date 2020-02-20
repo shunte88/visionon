@@ -1,6 +1,6 @@
 CFLAGS= -Wall -O3
-CFFFLAGS= -Wall  -lm -lpthread -lrt -march=armv7-a -mtune=cortex-a7 -mfloat-abi=hard -mfpu=neon-vfpv4 -ffast-math -pipe
-L_CL_FLAGS= -Wall -lm -lpthread -lrt -march=armv7-a -mtune=cortex-a7 -mfloat-abi=hard -mfpu=neon-vfpv4 -ffast-math -pipe -03
+CFFFLAGS= -Wall  -lm -lpthread -lrt -march=armv7-a -mtune=cortex-a7 -mfloat-abi=hard -mfpu=neon-vfpv4 -ffast-math -pipe -O3
+L_CL_FLAGS= -Wall -lm -lpthread -lrt -march=armv7-a -mtune=cortex-a7 -mfloat-abi=hard -mfpu=neon-vfpv4 -ffast-math -pipe -O3
 L_SW_FLAGS= -Wall -lssl -lcrypto -lm -lpthread -lrt -march=armv7-a -mtune=cortex-a7 -mfloat-abi=hard -mfpu=neon-vfpv4 -ffast-math -pipe -O3
 COMPILER=gcc
 
