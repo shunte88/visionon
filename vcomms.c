@@ -69,6 +69,15 @@ char *subs_par;
 struct vissy_settings *pvisset;
 struct vissy_stats *pvisstat;
 
+int strcicmp(char const *a, char const *b)
+{
+    for (;; a++, b++) {
+        int d = tolower((unsigned char)*a) - tolower((unsigned char)*b);
+        if (d != 0 || !*a)
+            return d;
+    }
+}
+
 void vcomms_init(struct vissy_settings *se, struct vissy_stats *st) {
   pvisset = se;
   pvisstat = st;
@@ -168,10 +177,11 @@ int vcomms_received(struct CliConn *client, char *message,
     }
 
     if (client->status == STATUS_HEADER) {
-      if (!strncmp(l, "Connection: keep-alive", 22))
+      //if (!strncmp(l, "Connection: keep-alive", 22))
+      if (!strcicmp(l, "Connection: keep-alive"))
         keepalive = 1;
-      if (!strncmp(l, "Connection: Keep-Alive", 22))
-        keepalive = 1;
+      //if (!strncmp(l, "Connection: Keep-Alive", 22))
+      //  keepalive = 1;
       if (startWithStr(l, "User-Agent:"))
         strncpy(client->agent, nextNotWhitespace(l), 190);
     }
@@ -179,23 +189,23 @@ int vcomms_received(struct CliConn *client, char *message,
     l = strtok(NULL, "\n");
   }
 
-  // End reading header, do what we need to do...
+  // End reading header, verify...
   if (reqtype == REQ_GET) {
     if (urlmatch != URL_YES) {
-      toLog(0, "Client request unknown URL, Closing <%d>...\n", client->descr);
+      toLog(0, "Client request unknown URL, closing <%d>...\n", client->descr);
       vcomms_send_notfound(client);
       close_client(client->descr);
       return 0;
     }
     if (http != HTTP_11) {
-      toLog(0, "Client request not HTTP/1.1 protocol, Closing <%d>...\n",
+      toLog(0, "Client request not HTTP/1.1 protocol, closing <%d>...\n",
             client->descr);
       vcomms_send_notsupported(client);
       close_client(client->descr);
       return 0;
     }
     if (!keepalive) {
-      toLog(0, "Client not added keep-alive, Closing <%d>...\n", client->descr);
+      toLog(0, "Not \"keep-alive\" connection, closing <%d>...\n", client->descr);
       vcomms_send_badreq(client);
       close_client(client->descr);
       return 0;
@@ -318,8 +328,9 @@ int vcomms_parseparam(struct CliConn *client, char *parameters) {
 }
 
 #define SSE_PAYLOADMAX 6 * 1024
-char send_outbuffer[SSE_PAYLOADMAX];
 int sendmessages(char *buf) {
+
+  char send_outbuffer[SSE_PAYLOADMAX];
   int mm;
   int mr;
   char error_o = 0;
@@ -332,7 +343,7 @@ int sendmessages(char *buf) {
   if (t == NULL || strlen(t) > 32) {
     printf("%s\n", buf);
     toLog(1,
-          "Wrong formatted message from communication channel (1), ignored.\n");
+          "Wrong formatted message from communication channel, skipped.\n");
     return 1;
   }
   strncpy(token, t, 32);
@@ -340,8 +351,8 @@ int sendmessages(char *buf) {
   t = strtok(NULL, "=");
 
   if (t == NULL) {
-    toLog(1, "Wrong formatted message (null) from communication channel (2), "
-             "ignored.\n");
+    toLog(1, "Wrong formatted message (null) from communication channel, "
+             "skipped.\n");
     return 1;
   }
 
@@ -356,7 +367,7 @@ int sendmessages(char *buf) {
     if (mm != 32 && mr < mm) {
       toLog(
           0,
-          "Wrong formatted message from communication channel (3), ignored.\n");
+          "Wrong formatted message from communication channel, skipped.\n");
       return 1;
     }
     strncpy(rejectId, token + mr + 1, 62);
@@ -365,7 +376,7 @@ int sendmessages(char *buf) {
 
   client_start();
   while (client_next() != NULL) {
-    if (client_current()->status == STATUS_COMM) {
+    if ((STATUS_COMM == client_current()->status) && (0 == client_current()->zap)) {
       if (client_subscribe_exists(client_current(), token, mm, rejectId)) {
         strcpy(send_outbuffer, "");
         client_current()->message++;
@@ -384,20 +395,12 @@ int sendmessages(char *buf) {
     client_start();
     while (client_next() != NULL)
       while (client_current()->err) {
-        if ((pvisset->resilience) && (client_current()->zap < 5)) {
-          toLog(0, "Error on send, client %s count %d\n", client_current()->uniq_id,
-                client_current()->zap);
-          client_current()->zap++;
-          client_current()->err = 0;
-        } else {
-          toLog(0, "Error on send, closing client %s:\n",
+        client_current()->zap = 1;
+        toLog(0, "Error on send, closing client %s:\n",
                 client_current()->uniq_id);
-          // need to resolve rather than terminate???
-          close_client(client_current()->descr);
-        }
+        close_client(client_current()->descr);
       }
   }
-
   return 0;
 }
 
@@ -485,9 +488,7 @@ int vcomms_send_handshake(struct CliConn *client) {
            "X-Requested-With\r\n"
            "Cache-Control: no-cache\r\n"
            "X-Accel-Buffering: no\r\n"
-           ///"Keep-Alive: timeout=300, max=100\r\n"
            "Connection: Keep-Alive\r\n"
-           ///"Transfer-Encoding: chunked\r\n"
            "Content-Type: text/event-stream\r\n\r\n",
            tbuff, pvisset->service);
 
@@ -576,7 +577,6 @@ int vcomms_send_head(struct CliConn *client) {
            "Access-Control-Allow-Headers: cache-control, last-event-id, "
            "X-Requested-With\r\n"
            "Allow: GET, HEAD, OPTIONS\r\n"
-           //////"Keep-Alive: timeout=300, max=100\r\n"
            "Content-Type: text/event-stream\r\n\r\n",
            tbuff, pvisset->service);
   cio_high_write(client, buffer);
@@ -602,7 +602,6 @@ int vcomms_send_options(struct CliConn *client) {
            "X-Requested-With\r\n"
            "Allow: GET, HEAD, OPTIONS\r\n"
            "Accept-Encoding:\r\n"
-           ///"Keep-Alive: timeout=300, max=100\r\n"
            "\r\n",
            tbuff, pvisset->service);
 

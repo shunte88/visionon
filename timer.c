@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/timerfd.h>
+#include <unistd.h>
 
 #include "timer.h"
 

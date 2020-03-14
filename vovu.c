@@ -24,6 +24,7 @@
 
 #include "log.h"
 #include "vision.h"
+#include "vissy.h"
 #include "vovu.h"
 
 #include "cdata.h"
@@ -31,57 +32,61 @@
 #include "timer.h"
 #include "vcomms.h"
 
-#define METER_DELAY 2 * 1000 // 1000
-#define PAYLOADMAX 6 * 1024
-
 struct vissy_settings visset;
 struct vissy_stats vistats;
 char *input = NULL;
 time_t last_cli_ttl_check = 0;
 int epoll_descriptor;
 char log_timebuf[80];
+pthread_t thread_id;
 
-void beforeExit(void) {
+void before_exit(void) {
+  printf("\nCleanup and close\n");
   timer_finalize();
+  pthread_cancel(thread_id);
+  pthread_join(thread_id, NULL);
   pthread_exit(NULL);
+  printf("Done.\n");
 }
 
 void sigint_handler(int sig) {
   backtrace();
-  beforeExit();
+  before_exit();
   exit(0);
 }
 
 void attach_signal_handler(void) {
-  struct sigaction sa;
-  sigset_t nss;
 
-  // Set signal mask - signals to block
-  sigemptyset(&nss);
-  sigaddset(&nss,
-            SIGCHLD); /* ignore child - i.e. we don't need to wait for it */
-  sigaddset(&nss, SIGTSTP);           /* ignore Tty stop signals */
-  sigaddset(&nss, SIGTTOU);           /* ignore Tty background writes */
-  sigaddset(&nss, SIGTTIN);           /* ignore Tty background reads */
-  sigprocmask(SIG_BLOCK, &nss, NULL); /* Block the above specified signals */
+  struct sigaction new_action, old_action;
 
-  // Set up a signal handler
-  sa.sa_handler = sigint_handler;
-  sigemptyset(&sa.sa_mask);
-  sa.sa_flags = 0;
+  new_action.sa_handler = sigint_handler;
+  sigemptyset (&new_action.sa_mask);
+  new_action.sa_flags = 0;
 
-  sigaction(SIGUSR1, &nss, NULL); /* catch user1 signal */
-  sigaction(SIGHUP, &nss, NULL);  /* catch hangup signal */
-  sigaction(SIGTERM, &nss, NULL); /* catch term signal */
-  sigaction(SIGINT, &nss, NULL);  /* catch interrupt signal */
+  sigaction (SIGINT, NULL, &old_action);
+  if (old_action.sa_handler != SIG_IGN)
+    sigaction (SIGINT, &new_action, NULL);
+  sigaction (SIGHUP, NULL, &old_action);
+  if (old_action.sa_handler != SIG_IGN)
+    sigaction (SIGHUP, &new_action, NULL);
+  sigaction (SIGTERM, NULL, &old_action);
+  if (old_action.sa_handler != SIG_IGN)
+    sigaction (SIGTERM, &new_action, NULL);
+  sigaction (SIGQUIT, NULL, &old_action);
+  if (old_action.sa_handler != SIG_IGN)
+    sigaction (SIGQUIT, &new_action, NULL);
+  sigaction (SIGSTOP, NULL, &old_action);
+  if (old_action.sa_handler != SIG_IGN)
+    sigaction (SIGSTOP, &new_action, NULL);
 
-  sa.sa_flags = SA_NODEFER;
-  sigaction(SIGSEGV, &nss, NULL); /* catch seg fault - and what now? */
+  new_action.sa_flags = SA_NODEFER;
+  sigaction(SIGSEGV, &new_action, NULL); /* catch seg fault - and hopefully backtrace */
+
 }
 
 int vissy_cio_high_read(struct CliConn *client, char *buffer) {
   if (strlen(buffer) > 0) {
-    toLog(0, "Received from %s <%d>:\n", client->info, client->descr);
+    toLog(0, "Received from %s\n", client->info);
     vcomms_received(client, buffer, visset.endpoint);
   }
   return 0;
@@ -120,22 +125,6 @@ void check_timeouts(void) {
 }
 
 int get_reinit_allowed(void) { return visset.reinit_allowed; }
-
-void diffsec_to_str(int diff_sec, char *buffer, int max) {
-  int x, d, h, m, s;
-  s = diff_sec % 86400;
-  d = (diff_sec - s) / 86400;
-  x = s;
-  s = x % 3600;
-  h = (x - s) / 3600;
-  x = s;
-  s = x % 60;
-  m = (x - s) / 60;
-  if (d > 0)
-    snprintf(buffer, max, "%dday %02d:%02d:%02d", d, h, m, s);
-  else
-    snprintf(buffer, max, "%02d:%02d:%02d", h, m, s);
-}
 
 int create_and_bind(int port) {
   char portstr[10];
@@ -206,6 +195,7 @@ int make_socket_non_blocking(int sfd) {
 int close_client(int d) {
 
   toLog(0, "Closing client %d\n", d);
+  sleep(2); // just a test to see if we can  resolve abend!
 
   // remove descriptor - epoll will delete
   epoll_ctl(epoll_descriptor, EPOLL_CTL_DEL, d, NULL);
@@ -250,7 +240,7 @@ void publish(const char *subevent, char *payload) {
 
 char *jints(const int list[], const char *delimiters, int *sz) {
   char *ret;
-  char ints[32];
+  char ints[10];
   int i = 1;
   sprintf(ints, "%d", list[0]);
   ret = realloc(NULL, strlen(ints) + 1);
@@ -284,50 +274,47 @@ void *initServer(void *x_voidptr) {
 
   char noop[] = "";
   if (cio_init(false, noop, noop)) {
-    toLog(0, "Exiting due to previous error...\n");
-    beforeExit();
+    before_exit();
     exit(1);
   }
 
-  toLog(2, "Open SSE port to listen...\n");
+  toLog(2, "Open SSE port to listen\n");
   sfd = create_and_bind(visset.port);
   if (sfd == -1) {
-    toLog(0, "Exiting due to previous error...\n");
-    beforeExit();
+    before_exit();
     exit(1);
   }
   s = make_socket_non_blocking(sfd);
   if (s == -1) {
-    toLog(0, "Exiting due to previous error...\n");
-    beforeExit();
+    before_exit();
     exit(1);
   }
   s = listen(sfd, SOMAXCONN);
   if (s == -1) {
-    toLog(0, "Error, listen() failure. Exiting...\n");
-    beforeExit();
+    toLog(0, "Error, listen() failure. Exiting\n");
+    before_exit();
     exit(1);
   }
 
-  toLog(2, "Creating epoll...\n");
+  toLog(2, "Creating epoll entry\n");
   epoll_descriptor = epoll_create1(0);
   if (epoll_descriptor == -1) {
-    toLog(0, "Error, epoll_create1() failure, Exiting...\n");
-    beforeExit();
+    toLog(0, "Error, epoll_create1() failure. Exiting\n");
+    before_exit();
     exit(1);
   }
   event.data.fd = sfd;
   event.events = EPOLLIN | EPOLLET;
   s = epoll_ctl(epoll_descriptor, EPOLL_CTL_ADD, sfd, &event);
   if (s == -1) {
-    toLog(0, "Error, epoll_ctl() add sse socket failure (2) Exiting...\n");
-    beforeExit();
+    toLog(0, "Error, epoll_ctl() add sse socket failure. Exiting\n");
+    before_exit();
     exit(1);
   }
 
   events = calloc(MAXEVENTS, sizeof event);
 
-  toLog(2, "Starting main event loop...\n");
+  toLog(2, "Starting main event loop\n");
 
   while (true) {
     int n, i;
@@ -337,7 +324,7 @@ void *initServer(void *x_voidptr) {
     for (i = 0; i < n; i++) {
       if ((events[i].events & EPOLLERR) || (events[i].events & EPOLLHUP) ||
           (!(events[i].events & EPOLLIN))) {
-        toLog(0, "SSE client HUP/ERR or shutdown, Closing...\n");
+        toLog(0, "SSE client HUP/ERR or shutdown, closing!\n");
         close_client(events[i].data.fd);
         continue;
       } else if (sfd == events[i].data.fd) {
@@ -371,8 +358,8 @@ void *initServer(void *x_voidptr) {
              list of fds to monitor. */
           s = make_socket_non_blocking(infd);
           if (s == -1) {
-            toLog(1, "Cannot set new accepted socket to non blocking. Closing "
-                     "socket!\n");
+            toLog(1, "Cannot set new accepted socket to non blocking."
+                     " Closing socket!\n");
             close(infd);
             break;
           }
@@ -381,8 +368,8 @@ void *initServer(void *x_voidptr) {
           event.events = EPOLLIN | EPOLLET;
           s = epoll_ctl(epoll_descriptor, EPOLL_CTL_ADD, infd, &event);
           if (s == -1) {
-            toLog(0, "Error, epoll_ctl() add failure (3)\n");
-            beforeExit();
+            toLog(0, "Error, epoll_ctl() add failure\n");
+            before_exit();
             exit(1);
           }
 
@@ -393,7 +380,7 @@ void *initServer(void *x_voidptr) {
           client_current()->status = STATUS_NEW;
 
           ccount = client_count();
-          toLog(0, "Added to the list (%d).\n", ccount);
+          toLog(0, "Added to the list, client count: %d\n", ccount);
           if (vistats.maxclients < ccount)
             vistats.maxclients = ccount;
         }
@@ -415,7 +402,7 @@ void *initServer(void *x_voidptr) {
               read(events[i].data.fd, input_p, MAX_READ_SIZE - strlen(input));
           if (count == -1) {
             if (errno != EAGAIN) {
-              toLog(1, "Error, read() failure (2) closing client...\n");
+              toLog(1, "Error, read() failure, closing client!\n");
               done = true;
             }
             break;
@@ -429,7 +416,7 @@ void *initServer(void *x_voidptr) {
         input[fullcount] = '\0';
 
         if (done) {
-          toLog(2, "Connection closed by peer:\n");
+          toLog(2, "Connection closed by peer\n");
           close_client(events[i].data.fd);
         } else {
           cio_low_read(client_get(events[i].data.fd), input, fullcount);
@@ -499,9 +486,6 @@ void zero_payload(size_t timer_id, void *user_data) {
       .sample_bin_chan = {{0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
                           {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
       .linear = {0, 0}};
-
-  // vissy_meter.sample_bin_chan[0][9] = {0,0,0,0,0,0,0,0,0,0};
-  // vissy_meter.sample_bin_chan[1][9] = {0,0,0,0,0,0,0,0,0,0};
 
   for (int i = 0; i < 2; i++) {
     construct_payload(vissy_meter, payload_mode(i), payload);
@@ -604,10 +588,10 @@ int main(int argi, char **argc) {
 
   if (visset.daemon) {
     if (visset.loglevel > 0)
-      toLog(0, "Started, entering daemon mode...\n");
+      toLog(0, "Started, entering daemon mode\n");
 
     if (daemon(0, 0) == -1) {
-      toLog(0, "Error, daemon() failure, Exiting...\n");
+      toLog(0, "Error, daemon() failure, Exiting!\n");
       exit(1);
     }
     toLog(0, "Active daemon mode.\n");
@@ -619,7 +603,6 @@ int main(int argi, char **argc) {
 
   attach_signal_handler();
 
-  pthread_t thread_id;
   uint8_t channel;
 
   pthread_create(&thread_id, NULL, initServer, NULL);
@@ -707,7 +690,7 @@ void banner(void) {
     pid_t pid = getpid();
 
     if (visset.daemon) {
-      toLog(0, "\n\n");
+      toLog(0, "\n");
       toLog(0, "__      ___     _                ____\n");
       toLog(0, "\\.\\    / (_)   (_)              / __ \\\n");
       toLog(0, " \\.\\  / / _ ___ _  ___  _ __   |.|  | |_ __\n");
@@ -725,6 +708,7 @@ void banner(void) {
       toLog(0, " - Log Level ...........: %d\n", visset.loglevel);
       toLog(0, " - Log file ............: %s\n", visset.logfile);
       toLog(0, " - PID .................: %d\n", pid);
+      toLog(0, "\n");
     } else {
       printf("\n__      ___     _                ____\n");
       printf("\\.\\    / (_)   (_)              / __ \\\n");

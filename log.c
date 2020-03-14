@@ -1,3 +1,24 @@
+/*
+ *	log.c
+ *
+ *	(c) 2020 Stuart Hunter
+ *
+ *	TODO:	
+ *
+ *	This program is free software: you can redistribute it and/or modify
+ *	it under the terms of the GNU General Public License as published by
+ *	the Free Software Foundation, either version 3 of the License, or
+ *	(at your option) any later version.
+ *
+ *	This program is distributed in the hope that it will be useful,
+ *	but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *	GNU General Public License for more details.
+ *
+ *	See <http://www.gnu.org/licenses/> to get a copy of the GNU General
+ *	Public License.
+ *
+ */
 
 #include <stdarg.h>
 #include <stdbool.h>
@@ -8,24 +29,24 @@
 #include <sys/time.h>
 #include <time.h>
 
+#include "vissy.h"
 #include "log.h"
-#include "vovu.h"
 
 time_t log_oldrawtime = 1;
 char log_timebuf[80];
 
-struct vissy_settings *pvisset;
+struct vissy_settings *plogvisset;
 
-void logInit(struct vissy_settings *se) { pvisset = se; }
+void logInit(struct vissy_settings *se) { plogvisset = se; }
 
 void toLog(int level, const char *format, ...) {
-  if (level <= pvisset->loglevel) {
-    if (pvisset->daemon) {
+  if (level <= plogvisset->loglevel) {
+    if (plogvisset->daemon) {
       FILE *logf;
 
-      logf = fopen(pvisset->logfile, "a");
+      logf = fopen(plogvisset->logfile, "a");
       if (logf == NULL) {
-        fprintf(stderr, "Error opening log file: %s\n", pvisset->logfile);
+        fprintf(stderr, "Error opening log file: %s\n", plogvisset->logfile);
         exit(1);
       }
 

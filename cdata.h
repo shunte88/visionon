@@ -28,9 +28,11 @@ struct CliConn {
   int allsubs;              // Listening on all token if this 1
   int message;              // message count
   int reinit;               // reinit count
-  int zap;                  // resilience count
+  int zap;                  // mark delete, dropped connection race condition
   char uniq_id[64]; // unique client id (optional) Can be set by parameter "id"
 };
+
+void diffsec_to_str(int diff_sec, char *buffer, int max);
 
 int client_init(void);
 

@@ -1,7 +1,26 @@
 /* Asynchronous SSE Server
- * Author: Peter Deak (hyper80@gmail.com)
- * License: GPL
+*
+ *  Author: Peter Deak (hyper80@gmail.com)
+ *  License: GPL
+ *	Author: Stuart Hunter
+ *
+ *	TODO:
+ *
+ *	This program is free software: you can redistribute it and/or modify
+ *	it under the terms of the GNU General Public License as published by
+ *	the Free Software Foundation, either version 3 of the License, or
+ *	(at your option) any later version.
+ *
+ *	This program is distributed in the hope that it will be useful,
+ *	but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *	GNU General Public License for more details.
+ *
+ *	See <http://www.gnu.org/licenses/> to get a copy of the GNU General
+ *	Public License.
+ *
  */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,6 +52,22 @@ struct CliBank *bFirst = NULL; // Fist CliConn bank
 struct CliBank *bCurr = NULL;  // Current CliConn bank
 
 struct CliCursor cursor;
+
+void diffsec_to_str(int diff_sec, char *buffer, int max) {
+  int x, d, h, m, s;
+  s = diff_sec % 86400;
+  d = (diff_sec - s) / 86400;
+  x = s;
+  s = x % 3600;
+  h = (x - s) / 3600;
+  x = s;
+  s = x % 60;
+  m = (x - s) / 60;
+  if (d > 0)
+    snprintf(buffer, max, "%dday %02d:%02d:%02d", d, h, m, s);
+  else
+    snprintf(buffer, max, "%02d:%02d:%02d", h, m, s);
+}
 
 int client_init(void) {
   bFirst = (struct CliBank *)malloc(sizeof(struct CliBank));
@@ -126,6 +161,7 @@ struct CliConn *client_add(int descr) {
 }
 
 int client_del(int descr) {
+
   struct CliConn *toDelete;
   toDelete = client_get(descr);
   if (toDelete == NULL) // Can't find the item
@@ -133,6 +169,7 @@ int client_del(int descr) {
 
   // Clear subsribed tokens to free memory
   client_subscribe_clear(toDelete);
+
 
   // Find the last item, and copy to the toDelete
   memcpy(toDelete, bCurr->clis + (bCurr->next - 1), sizeof(struct CliConn));
@@ -149,15 +186,17 @@ int client_del(int descr) {
           cursor.bank = b;
           cursor.current = cursor.bank->next - 1;
         }
+
         free(b->n);
         b->n = NULL;
         bCurr = b;
+
         break;
       }
       b = b->n;
     }
   }
-  // Cursor leaved at toDelete which set by client_get.
+  // Cursor left at toDelete which set by client_get.
   return 0;
 }
 
